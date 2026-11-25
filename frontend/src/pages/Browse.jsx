@@ -6,7 +6,7 @@ const CYCLE_TYPES = ['', 'City', 'Road', 'Mountain', 'Hybrid', 'Electric', 'Kids
 
 // FR-06 browse + FR-07 search filters.
 export default function Browse() {
-  const [filters, setFilters] = useState({ query: '', type: '', location: '', minPrice: '', maxPrice: '', from: '', to: '', timeFrom: '', timeTo: '' })
+  const [filters, setFilters] = useState({ query: '', type: '', location: '', minPrice: '', maxPrice: '', date: '', timeFrom: '', timeTo: '' })
   const [cycles, setCycles] = useState([])
   const [error, setError] = useState('')
 
@@ -31,7 +31,7 @@ export default function Browse() {
     <div className="page">
       <p className="eyebrow">Campus peer-to-peer rentals</p>
       <h2 className="hero">Find a cycle to rent <em>on campus.</em></h2>
-      <p className="lede">Students list their own cycles. Borrow one for a day or a week, and hand it back when you are done.</p>
+      <p className="lede">Students list their own cycles. Borrow one for a few hours and hand it back when you are done.</p>
       <div className="card">
         <div className="filters">
           <div><label>Search</label><input placeholder="brand, model, keyword" value={filters.query} onChange={set('query')} /></div>
@@ -41,12 +41,11 @@ export default function Browse() {
             </select>
           </div>
           <div><label>Pickup location</label><input placeholder="campus pickup point" value={filters.location} onChange={set('location')} /></div>
-          <div><label>Min price/day</label><input type="number" min="0" value={filters.minPrice} onChange={set('minPrice')} /></div>
-          <div><label>Max price/day</label><input type="number" min="0" value={filters.maxPrice} onChange={set('maxPrice')} /></div>
-          <div><label>From</label><input type="date" value={filters.from} onChange={set('from')} /></div>
-          <div><label>To</label><input type="date" value={filters.to} onChange={set('to')} /></div>
-          <div><label>Pickup time</label><input type="time" value={filters.timeFrom} onChange={set('timeFrom')} disabled={!filters.from || !filters.to} /></div>
-          <div><label>Return time</label><input type="time" value={filters.timeTo} onChange={set('timeTo')} disabled={!filters.from || !filters.to} /></div>
+          <div><label>Min price/hour</label><input type="number" min="0" value={filters.minPrice} onChange={set('minPrice')} /></div>
+          <div><label>Max price/hour</label><input type="number" min="0" value={filters.maxPrice} onChange={set('maxPrice')} /></div>
+          <div><label>Day</label><input type="date" value={filters.date} onChange={set('date')} /></div>
+          <div><label>Pickup time</label><input type="time" step="900" value={filters.timeFrom} onChange={set('timeFrom')} disabled={!filters.date} /></div>
+          <div><label>Return time</label><input type="time" step="900" value={filters.timeTo} onChange={set('timeTo')} disabled={!filters.date} /></div>
           <div><button onClick={() => load()}>Search</button></div>
         </div>
       </div>
@@ -60,9 +59,14 @@ export default function Browse() {
             {c.photos.length > 0 ? <img src={c.photos[0].url} alt={c.title} /> : <div className="no-photo">🚲</div>}
             <h3><Link to={`/cycles/${c.id}`}>{c.title}</Link></h3>
             <div className="muted">{c.brand} {c.model} {c.cycleType ? `- ${c.cycleType}` : ''}</div>
-            <div className="muted">{c.location} - available {c.availableFrom} to {c.availableTo}</div>
+            <div className="muted">
+              {c.location}
+              {c.availability && c.availability.length > 0
+                ? ` - next: ${c.availability[0].day} ${c.availability[0].pickupFrom}-${c.availability[0].returnBy}`
+                : ' - no upcoming days'}
+            </div>
             <p>
-              <strong>{formatMoney(c.pricePerDay)}</strong>/day
+              <strong>{formatMoney(c.pricePerHour)}</strong>/hour
               {c.ownerRating != null && (
                 <span className="muted"> &nbsp;|&nbsp; owner <span className="stars">★</span> {Number(c.ownerRating).toFixed(1)}</span>
               )}

@@ -16,6 +16,10 @@ export default function Profile() {
   async function save(e) {
     e.preventDefault()
     setError(''); setNotice('')
+    if (form.phone && !/^\d{10}$/.test(form.phone)) {
+      setError('Phone number must be exactly 10 digits')
+      return
+    }
     try {
       const updated = await request('PUT', '/api/me', form)
       setSession(getToken(), updated)
@@ -41,8 +45,8 @@ export default function Profile() {
         <form onSubmit={save}>
           <label>Full name</label>
           <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
-          <label>Phone</label>
-          <input value={form.phone || ''} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+          <label>Phone (10 digits)</label>
+          <input value={form.phone || ''} onChange={(e) => setForm({ ...form, phone: e.target.value })} inputMode="numeric" maxLength={10} placeholder="9876543210" />
           <div className="button-row"><button type="submit">Save</button></div>
         </form>
       </div>

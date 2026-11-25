@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useParams, Link } from 'react-router-dom'
 import { request, getUser, formatMoney } from '../api.js'
 
 // FR-08 listing details + FR-10 rental request with live price preview (FR-16, BR-09).
+// Rentals are single-day: pick one of the owner's days, then pickup and return
+// times (15-minute steps) inside that day's window; priced per hour.
 export default function CycleDetail() {
   const { id } = useParams()
-  const navigate = useNavigate()
   const [cycle, setCycle] = useState(null)
   const [ownerProfile, setOwnerProfile] = useState(null)
-  const [startDate, setStartDate] = useState('')
-  const [endDate, setEndDate] = useState('')
+  const [date, setDate] = useState('')
   const [startTime, setStartTime] = useState('09:00')
   const [endTime, setEndTime] = useState('18:00')
   const [message, setMessage] = useState('')
@@ -22,19 +22,35 @@ export default function CycleDetail() {
     }).then(setOwnerProfile).catch((err) => setError(err.message))
   }, [id])
 
-  // Live price preview: days (inclusive) x price per day, shown before confirming (FR-16).
-  const days = useMemo(() => {
-    if (!startDate || !endDate) return 0
-    const d = (new Date(endDate) - new Date(startDate)) / 86400000 + 1
-    return d > 0 ? d : 0
-  }, [startDate, endDate])
-  const total = cycle ? days * Number(cycle.pricePerDay) : 0
+  // The owner's time window for the chosen day, if the cycle is available that day.
+  const dayWindow = useMemo(() => {
+    if (!cycle || !date) return null
+    return (cycle.availability || []).find((a) => a.day === date) || null
+  }, [cycle, date])
+
+  function pickDate(value) {
+    setDate(value)
+    const w = (cycle.availability || []).find((a) => a.day === value)
+    if (w) {
+      setStartTime(w.pickupFrom)
+      setEndTime(w.returnBy)
+    }
+  }
+
+  // Live price preview: exact hours x hourly rate, proportional per 15 minutes (FR-16).
+  const hours = useMemo(() => {
+    if (!startTime || !endTime || endTime <= startTime) return 0
+    const [sh, sm] = startTime.split(':').map(Number)
+    const [eh, em] = endTime.split(':').map(Number)
+    return ((eh * 60 + em) - (sh * 60 + sm)) / 60
+  }, [startTime, endTime])
+  const total = cycle ? Math.round(hours * Number(cycle.pricePerHour) * 100) / 100 : 0
 
   async function sendRequest(e) {
     e.preventDefault()
     setError(''); setMessage('')
     try {
-      await request('POST', '/api/bookings', { cycleId: Number(id), startDate, endDate, startTime, endTime })
+      await request('POST', '/api/bookings', { cycleId: Number(id), date, startTime, endTime })
       setMessage('Booking request sent! The owner will accept or reject it. Track it under Bookings.')
     } catch (err) {
       setError(err.message)
@@ -62,11 +78,24 @@ export default function CycleDetail() {
             <tr><th>Type</th><td>{cycle.cycleType || '-'}</td></tr>
             <tr><th>Condition</th><td>{cycle.condition || '-'}</td></tr>
             <tr><th>Pickup area</th><td>{cycle.location || '-'}</td></tr>
-            <tr><th>Available</th><td>{cycle.availableFrom} to {cycle.availableTo}</td></tr>
-            <tr><th>Price</th><td><strong>{formatMoney(cycle.pricePerDay)}</strong> per day</td></tr>
+            <tr><th>Price</th><td><strong>{formatMoney(cycle.pricePerHour)}</strong> per hour</td></tr>
           </tbody>
         </table>
         {cycle.description && <p>{cycle.description}</p>}
+
+        <h4>Available days</h4>
+        {(!cycle.availability || cycle.availability.length === 0) && (
+          <p className="muted">The owner has not added any upcoming days yet.</p>
+        )}
+        {(cycle.availability || []).length > 0 && (
+          <table>
+            <tbody>
+              {cycle.availability.map((a) => (
+                <tr key={a.id}><th>{a.day}</th><td>pickup from {a.pickupFrom}, return by {a.returnBy}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        )}
         <p className="muted">
           Listed by {cycle.ownerName}
           {cycle.ownerRating != null && <> - <span className="stars">★</span> {Number(cycle.ownerRating).toFixed(1)} ({cycle.ownerReviewCount} reviews)</>}
@@ -95,20 +124,26 @@ export default function CycleDetail() {
           {error && <div className="error">{error}</div>}
           <form onSubmit={sendRequest}>
             <div className="filters">
-              <div><label>Start date</label><input type="date" value={startDate} min={cycle.availableFrom} max={cycle.availableTo} onChange={(e) => setStartDate(e.target.value)} required /></div>
-              <div><label>End date</label><input type="date" value={endDate} min={startDate || cycle.availableFrom} max={cycle.availableTo} onChange={(e) => setEndDate(e.target.value)} required /></div>
-              <div><label>Pickup time</label><input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} required /></div>
-              <div><label>Return time</label><input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} required /></div>
+              <div><label>Day</label><input type="date" value={date} onChange={(e) => pickDate(e.target.value)} required /></div>
+              <div><label>Pickup time</label><input type="time" step="900" value={startTime}
+                min={dayWindow ? dayWindow.pickupFrom : undefined} max={dayWindow ? dayWindow.returnBy : undefined}
+                onChange={(e) => setStartTime(e.target.value)} required /></div>
+              <div><label>Return time</label><input type="time" step="900" value={endTime}
+                min={dayWindow ? dayWindow.pickupFrom : undefined} max={dayWindow ? dayWindow.returnBy : undefined}
+                onChange={(e) => setEndTime(e.target.value)} required /></div>
             </div>
-            {days > 0 && (
+            {date && !dayWindow && (
+              <p className="muted">This cycle is not available on {date} - pick one of the owner's days above.</p>
+            )}
+            {dayWindow && hours > 0 && (
               <p>
-                {days} day{days > 1 ? 's' : ''} x {formatMoney(cycle.pricePerDay)} = <strong>{formatMoney(total)}</strong>
-                <span className="muted"> &nbsp;pickup {startTime}, return by {endTime}</span>
+                {hours} hour{hours === 1 ? '' : 's'} x {formatMoney(cycle.pricePerHour)} = <strong>{formatMoney(total)}</strong>
+                <span className="muted"> &nbsp;on {date}, pickup {startTime}, return by {endTime}</span>
                 <span className="muted"> (payment is recorded after the owner accepts)</span>
               </p>
             )}
             <div className="button-row">
-              <button type="submit" disabled={days === 0}>Send booking request</button>
+              <button type="submit" disabled={!dayWindow || hours === 0}>Send booking request</button>
             </div>
           </form>
         </div>

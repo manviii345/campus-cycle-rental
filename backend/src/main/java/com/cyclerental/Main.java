@@ -118,6 +118,15 @@ public final class Main {
                     if (method.equals("DELETE") && parts.length == 6 && parts[4].equals("photos")) {
                         CycleHandlers.deletePhoto(ex, id, parseId(parts[5])); return;
                     }
+                    if (method.equals("GET") && parts.length == 5 && parts[4].equals("availability")) {
+                        CycleHandlers.listAvailability(ex, id); return;
+                    }
+                    if (method.equals("POST") && parts.length == 5 && parts[4].equals("availability")) {
+                        CycleHandlers.addAvailability(ex, id); return;
+                    }
+                    if (method.equals("DELETE") && parts.length == 6 && parts[4].equals("availability")) {
+                        CycleHandlers.deleteAvailability(ex, id, parseId(parts[5])); return;
+                    }
                 }
                 break;
             }

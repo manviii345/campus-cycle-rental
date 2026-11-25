@@ -112,9 +112,11 @@ cd backend
 BASE=http://localhost:8080 bash smoke-test.sh
 ```
 
-27 checks covering registration, login, listings, photos, search filters,
-booking flow, overlap prevention, payment, two-sided pickup/return, reviews,
-notifications, issue reports, and history retention. Expect `Passed: 41`.
+Checks covering registration (incl. 10-digit phone validation), login, listings,
+per-day availability windows, photos, search filters (incl. single-day time search),
+hourly price calculation with 15-minute steps, booking flow, overlap prevention,
+payment, two-sided pickup/return, reviews, notifications, issue reports, and history
+retention. Expect `Passed: 75`.
 The late-return fine test (SQLite only, it edits dates in the database file) is run with
 `BASE=http://localhost:8080 DB_FILE=/path/to/cyclerental.db ./smoke-late.sh` and expects `Passed: 5`.
 
@@ -122,10 +124,11 @@ The late-return fine test (SQLite only, it edits dates in the database file) is 
 
 1. Register **Asha** and **Ram** with Thapar-style emails (e.g. `asha_be24@thapar.edu`,
    `ram_be24@thapar.edu`) - only `@thapar.edu` addresses can create accounts.
-2. As Asha: My Cycles - create a listing (title, price/day, location,
-   availability dates), add a photo.
-3. As Ram: Browse - search with filters, open the listing, pick dates, see
-   the live price calculation, send the booking request (status PENDING).
+2. As Asha: My Cycles - create a listing (title, price per hour, location),
+   add a photo, then add rentable days, each with a pickup/return time window.
+3. As Ram: Browse - search with filters (one day + pickup/return time), open the
+   listing, pick a day and times, see the live price calculation (exact hours x the
+   hourly rate), send the booking request (status PENDING).
 4. As Asha: Bookings - "Requests for my cycles" - **Accept**.
 5. As Ram: Bookings - **Record payment** (method UPI, any reference).
 6. Both sides click **Confirm pickup** - status becomes ACTIVE.
@@ -142,14 +145,14 @@ The late-return fine test (SQLite only, it edits dates in the database file) is 
 | FR-01/02 register, login/logout | `AuthHandlers`, PBKDF2 hashing in `Auth` (NFR-01) |
 | FR-03 profile update | `AuthHandlers.updateMe`, Profile page |
 | FR-04/05 listing create/edit/pause/remove | `CycleHandlers`, MyCycles page (owner-only, BR-02) |
-| FR-06/07 browse + filters | `CycleHandlers.search` (query, type, location, price, dates) |
+| FR-06/07 browse + filters | `CycleHandlers.search` (query, type, location, hourly price, one day + times) |
 | FR-08 listing details + owner info | `CycleHandlers.getOne`, CycleDetail page |
-| FR-09 availability window | `available_from`/`available_to` on the listing |
+| FR-09 availability | `cycle_availability` table: the owner adds days, each with a pickup/return window |
 | FR-10/11 request + accept/reject | `BookingHandlers.create/accept/reject` |
 | FR-12 statuses | PENDING, ACCEPTED, REJECTED, CANCELLED, ACTIVE, COMPLETED |
 | FR-13 no overlapping confirmed bookings | `hasOverlap()` checked at request **and** accept time (BR-05, NFR-05) |
 | FR-14/15 history + cancellation | `listMine`, `cancel` (before pickup only) |
-| FR-16 price calculation | days (inclusive) x price/day, previewed before submit (BR-09) |
+| FR-16 price calculation | exact time x hourly rate (proportional per 15 minutes), previewed before submit (BR-09) |
 | FR-17/18 payment recording | `recordPayment` - manual record per SRS 2.3 (no gateway) |
 | FR-19/20 pickup/return | two-sided confirmation, both parties must confirm |
 | FR-21 notifications | in-app notifications on every status change |

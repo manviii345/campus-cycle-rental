@@ -61,7 +61,10 @@ export default function Bookings() {
           <div className="card" key={b.id}>
             <h3>{b.cycleTitle} <span className={`badge ${b.status}`}>{b.status}</span></h3>
             <p className="muted">
-              {b.startDate}{b.startTime ? ` ${b.startTime}` : ''} to {b.endDate}{b.endTime ? ` ${b.endTime}` : ''} - <strong>{formatMoney(b.totalAmount)}</strong>
+              {b.startDate === b.endDate
+                ? `${b.startDate}${b.startTime ? `, ${b.startTime} to ${b.endTime || ''}` : ''}`
+                : `${b.startDate}${b.startTime ? ` ${b.startTime}` : ''} to ${b.endDate}${b.endTime ? ` ${b.endTime}` : ''}`}
+              {' '}- <strong>{formatMoney(b.totalAmount)}</strong>
               {' '}- {iAmOwner ? `renter: ${b.renterName}` : `owner: ${b.ownerName}`}
             </p>
 

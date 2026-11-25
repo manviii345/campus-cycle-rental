@@ -99,12 +99,24 @@ public final class Db {
                 "cycle_type VARCHAR(50), " +           // e.g. Road, Mountain, Hybrid, City, Electric
                 "condition_note VARCHAR(50), " +       // e.g. New, Good, Fair
                 "description TEXT, " +
-                "price_per_day DECIMAL(10,2) NOT NULL, " +
+                "price_per_day DECIMAL(10,2) NOT NULL, " +  // legacy: kept for old rows; new listings store hourly x 24
+                "price_per_hour DECIMAL(10,2), " +     // the rate renters actually pay (per hour)
                 "location VARCHAR(150), " +            // pickup area / locality
-                "available_from VARCHAR(10) NOT NULL, " +  // YYYY-MM-DD
+                "available_from VARCHAR(10) NOT NULL, " +  // YYYY-MM-DD summary of availability days ('' when none)
                 "available_to VARCHAR(10) NOT NULL, " +
                 "status VARCHAR(20) NOT NULL DEFAULT 'AVAILABLE', " + // AVAILABLE, PAUSED, UNAVAILABLE, REMOVED
                 "created_at " + now + " NOT NULL)",
+
+            // The days a cycle can be rented, each with its pickup/return time window (FR-09).
+            // Renters book a single day with pickup and return times inside one of these windows.
+            "CREATE TABLE IF NOT EXISTS cycle_availability (" +
+                "id " + pk + ", " +
+                "cycle_id BIGINT NOT NULL REFERENCES cycles(id) ON DELETE CASCADE, " +
+                "day VARCHAR(10) NOT NULL, " +          // YYYY-MM-DD
+                "pickup_from VARCHAR(5) NOT NULL, " +  // HH:MM, 15-minute steps
+                "return_by VARCHAR(5) NOT NULL, " +    // HH:MM, 15-minute steps
+                "created_at " + now + " NOT NULL, " +
+                "UNIQUE (cycle_id, day))",
 
             "CREATE TABLE IF NOT EXISTS cycle_photos (" +
                 "id " + pk + ", " +
@@ -172,16 +184,49 @@ public final class Db {
             // Migrations for databases created before pickup/return times existed.
             for (String alter : new String[] {
                     "ALTER TABLE bookings ADD COLUMN start_time VARCHAR(5)",
-                    "ALTER TABLE bookings ADD COLUMN end_time VARCHAR(5)"}) {
+                    "ALTER TABLE bookings ADD COLUMN end_time VARCHAR(5)",
+                    "ALTER TABLE cycles ADD COLUMN price_per_hour DECIMAL(10,2)"}) {
                 try {
                     st.execute(alter);
                 } catch (SQLException ignored) {
                     // column already exists - nothing to do
                 }
             }
+            // Listings created before hourly pricing get their hourly rate from the old daily rate.
+            st.execute("UPDATE cycles SET price_per_hour = ROUND(price_per_day / 24.0, 2) WHERE price_per_hour IS NULL");
         } catch (SQLException e) {
             throw new ExceptionInInitializerError("Could not initialise the database: " + e.getMessage()
                 + "\nCheck DB_URL / DB_USER / DB_PASSWORD (see README). Current DB_URL=" + URL);
+        }
+        backfillLegacyAvailability();
+    }
+
+    /**
+     * Listings created before per-day availability existed had one continuous
+     * available_from..available_to window. Give each such listing matching
+     * availability days (09:00-18:00, capped at 90 days out) so old listings
+     * stay bookable. Runs only for listings with no availability rows yet.
+     */
+    private static void backfillLegacyAvailability() {
+        java.time.LocalDate today = java.time.LocalDate.now();
+        java.time.LocalDate maxDay = today.plusDays(90);
+        for (Map<String, Object> c : query("SELECT id, available_from, available_to FROM cycles")) {
+            Object idObj = c.get("id");
+            long cycleId = ((Number) idObj).longValue();
+            long existing = ((Number) queryOne(
+                "SELECT COUNT(*) AS n FROM cycle_availability WHERE cycle_id = ?", cycleId).get("n")).longValue();
+            if (existing > 0) continue;
+            String from = (String) c.get("available_from");
+            String to = (String) c.get("available_to");
+            if (from == null || to == null || !from.matches("\\d{4}-\\d{2}-\\d{2}") || !to.matches("\\d{4}-\\d{2}-\\d{2}")) continue;
+            java.time.LocalDate start = java.time.LocalDate.parse(from);
+            java.time.LocalDate end = java.time.LocalDate.parse(to);
+            if (start.isBefore(today)) start = today;
+            if (end.isAfter(maxDay)) end = maxDay;
+            for (java.time.LocalDate d = start; !d.isAfter(end); d = d.plusDays(1)) {
+                execute("INSERT INTO cycle_availability (cycle_id, day, pickup_from, return_by, created_at)" +
+                    " VALUES (?, ?, '09:00', '18:00', " + Auth.now() + ")", cycleId, d.toString());
+            }
         }
     }
 

@@ -23,29 +23,38 @@ public final class CycleHandlers {
 
     private CycleHandlers() {}
 
-    /** POST /api/cycles - create a listing (FR-04). */
+    /** POST /api/cycles - create a listing (FR-04). Priced per hour; availability days are added separately. */
     public static void create(HttpExchange ex) throws Exception {
         Map<String, Object> user = Auth.requireUser(ex.getRequestHeaders().getFirst("Authorization"));
         Map<String, Object> body = Api.bodyJson(ex);
 
         String title = Json.str(body, "title");
-        double pricePerDay = Json.num(body, "pricePerDay");
-        String availableFrom = Json.str(body, "availableFrom");
-        String availableTo = Json.str(body, "availableTo");
-        validateDates(availableFrom, availableTo);
-        if (pricePerDay <= 0) throw new ApiException(400, "Price per day must be greater than zero");
+        double pricePerHour = hourlyRate(body);
+        if (pricePerHour <= 0) throw new ApiException(400, "Price per hour must be greater than zero");
 
+        // available_from/to are kept as a summary of the availability days (see syncAvailabilitySummary).
         long id = Db.execute(
             "INSERT INTO cycles (owner_id, title, brand, model, cycle_type, condition_note, description," +
-            " price_per_day, location, available_from, available_to, status, created_at)" +
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'AVAILABLE', " + Auth.now() + ")",
+            " price_per_day, price_per_hour, location, available_from, available_to, status, created_at)" +
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', 'AVAILABLE', " + Auth.now() + ")",
             Auth.userId(user), title,
             Json.strOrNull(body, "brand"), Json.strOrNull(body, "model"),
             Json.strOrNull(body, "cycleType"), Json.strOrNull(body, "condition"),
-            Json.strOrNull(body, "description"), pricePerDay,
-            Json.strOrNull(body, "location"), availableFrom, availableTo);
+            Json.strOrNull(body, "description"), Math.round(pricePerHour * 24.0 * 100.0) / 100.0, pricePerHour,
+            Json.strOrNull(body, "location"));
 
         Api.sendJson(ex, 201, getCycle(id));
+    }
+
+    /** Hourly rate from the request body; accepts the legacy pricePerDay and converts it. */
+    static double hourlyRate(Map<String, Object> body) {
+        if (body.get("pricePerHour") instanceof Number) {
+            return ((Number) body.get("pricePerHour")).doubleValue();
+        }
+        if (body.get("pricePerDay") instanceof Number) {
+            return Math.round(((Number) body.get("pricePerDay")).doubleValue() / 24.0 * 100.0) / 100.0;
+        }
+        return 0;
     }
 
     /** GET /api/cycles/mine - the logged-in user's own listings. */
@@ -60,9 +69,11 @@ public final class CycleHandlers {
 
     /**
      * GET /api/cycles - browse and search (FR-06) with filters (FR-07):
-     *   ?query=&type=&location=&minPrice=&maxPrice=&from=&to=
-     * The from/to filter only returns cycles whose availability window fully
-     * covers the requested period and that have no overlapping confirmed booking.
+     *   ?query=&type=&location=&minPrice=&maxPrice=&date=&timeFrom=&timeTo=
+     * The date filter takes a single day with an optional pickup/return time
+     * interval (15-minute steps) and only returns cycles the owner made
+     * available that day, inside one of that day's time windows, with no
+     * overlapping confirmed booking. minPrice/maxPrice compare the hourly rate.
      */
     public static void search(HttpExchange ex) throws Exception {
         Auth.requireUser(ex.getRequestHeaders().getFirst("Authorization")); // listings are visible to logged-in students only
@@ -86,27 +97,38 @@ public final class CycleHandlers {
             params.add("%" + p.get("location").toLowerCase() + "%");
         }
         if (p.containsKey("minPrice") && !p.get("minPrice").isEmpty()) {
-            sql.append(" AND c.price_per_day >= ?");
+            sql.append(" AND c.price_per_hour >= ?");
             params.add(Double.parseDouble(p.get("minPrice")));
         }
         if (p.containsKey("maxPrice") && !p.get("maxPrice").isEmpty()) {
-            sql.append(" AND c.price_per_day <= ?");
+            sql.append(" AND c.price_per_hour <= ?");
             params.add(Double.parseDouble(p.get("maxPrice")));
         }
-        String from = p.get("from");
-        String to = p.get("to");
-        if (from != null && !from.isEmpty() && to != null && !to.isEmpty()) {
-            // Optional start/end times (HH:MM) refine the search to an exact time window.
-            String timeFrom = BookingHandlers.validTimeOr(p.get("timeFrom"), BookingHandlers.DEFAULT_START_TIME);
-            String timeTo = BookingHandlers.validTimeOr(p.get("timeTo"), BookingHandlers.DEFAULT_END_TIME);
-            // Availability window must cover the whole rental period (BR-04)...
-            sql.append(" AND c.available_from <= ? AND c.available_to >= ?");
-            params.add(from); params.add(to);
-            // ...and no confirmed booking may overlap the requested date+time window (BR-05 / FR-13).
-            sql.append(" AND NOT EXISTS (SELECT 1 FROM bookings b WHERE b.cycle_id = c.id" +
-                       " AND b.status IN ('ACCEPTED','ACTIVE')" +
-                       " AND (b.start_date || ' ' || b.start_time) <= ? AND (b.end_date || ' ' || b.end_time) >= ?)");
-            params.add(to + " " + timeTo); params.add(from + " " + timeFrom);
+        String date = p.get("date");
+        if (date != null && !date.isEmpty()) {
+            if (!date.matches("\\d{4}-\\d{2}-\\d{2}")) {
+                throw new ApiException(400, "Date must be in YYYY-MM-DD format");
+            }
+            String timeFrom = p.get("timeFrom");
+            String timeTo = p.get("timeTo");
+            boolean hasTimes = timeFrom != null && !timeFrom.isEmpty() && timeTo != null && !timeTo.isEmpty();
+            if (hasTimes) {
+                timeFrom = BookingHandlers.validTimeOr(timeFrom, null);
+                timeTo = BookingHandlers.validTimeOr(timeTo, null);
+                // The day must have a window covering the requested interval (BR-04)...
+                sql.append(" AND EXISTS (SELECT 1 FROM cycle_availability a WHERE a.cycle_id = c.id" +
+                           " AND a.day = ? AND a.pickup_from <= ? AND a.return_by >= ?)");
+                params.add(date); params.add(timeFrom); params.add(timeTo);
+                // ...and no confirmed booking may overlap the requested slot (BR-05 / FR-13).
+                sql.append(" AND NOT EXISTS (SELECT 1 FROM bookings b WHERE b.cycle_id = c.id" +
+                           " AND b.status IN ('ACCEPTED','ACTIVE')" +
+                           " AND (b.start_date || ' ' || b.start_time) <= ? AND (b.end_date || ' ' || b.end_time) >= ?)");
+                params.add(date + " " + timeTo); params.add(date + " " + timeFrom);
+            } else {
+                // Date only: the owner must have made the cycle available that day.
+                sql.append(" AND EXISTS (SELECT 1 FROM cycle_availability a WHERE a.cycle_id = c.id AND a.day = ?)");
+                params.add(date);
+            }
         }
         sql.append(" ORDER BY c.id DESC");
 
@@ -128,37 +150,113 @@ public final class CycleHandlers {
         Api.sendJson(ex, 200, decorate(cycle, false));
     }
 
-    /** PUT /api/cycles/{id} - edit listing (FR-05). Only the owner (BR-02). */
+    /** PUT /api/cycles/{id} - edit listing (FR-05). Only the owner (BR-02). Availability days use the availability endpoints. */
     public static void update(HttpExchange ex, long id) throws Exception {
         Map<String, Object> user = Auth.requireUser(ex.getRequestHeaders().getFirst("Authorization"));
-        Map<String, Object> cycle = mustOwn(user, id);
+        mustOwn(user, id);
         Map<String, Object> body = Api.bodyJson(ex);
 
         String status = Json.strOrNull(body, "status");
         if (status != null && !status.matches("AVAILABLE|PAUSED|UNAVAILABLE")) {
             throw new ApiException(400, "Status must be AVAILABLE, PAUSED or UNAVAILABLE");
         }
-        String availableFrom = Json.strOrNull(body, "availableFrom");
-        String availableTo = Json.strOrNull(body, "availableTo");
-        String newFrom = availableFrom != null ? availableFrom : (String) cycle.get("available_from");
-        String newTo = availableTo != null ? availableTo : (String) cycle.get("available_to");
-        validateDates(newFrom, newTo);
-
-        Double price = body.get("pricePerDay") instanceof Number ? ((Number) body.get("pricePerDay")).doubleValue() : null;
-        if (price != null && price <= 0) throw new ApiException(400, "Price per day must be greater than zero");
+        Double hourly = null;
+        if (body.get("pricePerHour") instanceof Number || body.get("pricePerDay") instanceof Number) {
+            hourly = hourlyRate(body);
+            if (hourly <= 0) throw new ApiException(400, "Price per hour must be greater than zero");
+        }
+        Double derivedDaily = hourly != null ? Math.round(hourly * 24.0 * 100.0) / 100.0 : null;
 
         Db.execute(
             "UPDATE cycles SET title = COALESCE(?, title), brand = COALESCE(?, brand), model = COALESCE(?, model)," +
             " cycle_type = COALESCE(?, cycle_type), condition_note = COALESCE(?, condition_note)," +
             " description = COALESCE(?, description), price_per_day = COALESCE(?, price_per_day)," +
-            " location = COALESCE(?, location), available_from = ?, available_to = ?, status = COALESCE(?, status)" +
+            " price_per_hour = COALESCE(?, price_per_hour)," +
+            " location = COALESCE(?, location), status = COALESCE(?, status)" +
             " WHERE id = ?",
             Json.strOrNull(body, "title"), Json.strOrNull(body, "brand"), Json.strOrNull(body, "model"),
             Json.strOrNull(body, "cycleType"), Json.strOrNull(body, "condition"),
-            Json.strOrNull(body, "description"), price, Json.strOrNull(body, "location"),
-            newFrom, newTo, status, id);
+            Json.strOrNull(body, "description"), derivedDaily, hourly, Json.strOrNull(body, "location"),
+            status, id);
 
         Api.sendJson(ex, 200, getCycle(id));
+    }
+
+    // ---------- availability days (FR-09): the owner lists the days a cycle can be rented ----------
+
+    /** GET /api/cycles/{id}/availability - the days and time windows, upcoming first. */
+    public static void listAvailability(HttpExchange ex, long id) throws Exception {
+        Auth.requireUser(ex.getRequestHeaders().getFirst("Authorization"));
+        Api.sendJson(ex, 200, availabilityRows(id));
+    }
+
+    /** POST /api/cycles/{id}/availability  {day, pickupFrom, returnBy} - add or replace one day's window. */
+    public static void addAvailability(HttpExchange ex, long id) throws Exception {
+        Map<String, Object> user = Auth.requireUser(ex.getRequestHeaders().getFirst("Authorization"));
+        mustOwn(user, id);
+        Map<String, Object> body = Api.bodyJson(ex);
+
+        String day = Json.str(body, "day");
+        if (!day.matches("\\d{4}-\\d{2}-\\d{2}")) {
+            throw new ApiException(400, "Day must be in YYYY-MM-DD format");
+        }
+        if (day.compareTo(java.time.LocalDate.now().toString()) < 0) {
+            throw new ApiException(400, "Please choose a day from today onwards");
+        }
+        String pickupFrom = BookingHandlers.validTimeOr(Json.str(body, "pickupFrom"), null);
+        String returnBy = BookingHandlers.validTimeOr(Json.str(body, "returnBy"), null);
+        if (pickupFrom.compareTo(returnBy) >= 0) {
+            throw new ApiException(400, "The return-by time must be after the earliest pickup time");
+        }
+
+        Db.execute("DELETE FROM cycle_availability WHERE cycle_id = ? AND day = ?", id, day); // replace the day's window
+        Db.execute(
+            "INSERT INTO cycle_availability (cycle_id, day, pickup_from, return_by, created_at) VALUES (?, ?, ?, ?, " + Auth.now() + ")",
+            id, day, pickupFrom, returnBy);
+        syncAvailabilitySummary(id);
+        Api.sendJson(ex, 200, availabilityRows(id));
+    }
+
+    /** DELETE /api/cycles/{id}/availability/{availId} - remove one day. */
+    public static void deleteAvailability(HttpExchange ex, long id, long availId) throws Exception {
+        Map<String, Object> user = Auth.requireUser(ex.getRequestHeaders().getFirst("Authorization"));
+        mustOwn(user, id);
+        Map<String, Object> row = Db.queryOne(
+            "SELECT * FROM cycle_availability WHERE id = ? AND cycle_id = ?", availId, id);
+        if (row == null) throw new ApiException(404, "Availability day not found");
+        long booked = ((Number) Db.queryOne(
+            "SELECT COUNT(*) AS n FROM bookings WHERE cycle_id = ? AND start_date = ?" +
+            " AND status IN ('PENDING','ACCEPTED','ACTIVE')", id, row.get("day")).get("n")).longValue();
+        if (booked > 0) {
+            throw new ApiException(409, "A booking request exists for this day - reject or finish it before removing the day");
+        }
+        Db.execute("DELETE FROM cycle_availability WHERE id = ?", availId);
+        syncAvailabilitySummary(id);
+        Api.sendJson(ex, 200, availabilityRows(id));
+    }
+
+    /** Keeps cycles.available_from/to as a summary of the availability days ('' when none). */
+    static void syncAvailabilitySummary(long cycleId) {
+        Db.execute(
+            "UPDATE cycles SET available_from = COALESCE((SELECT MIN(day) FROM cycle_availability WHERE cycle_id = ?), '')," +
+            " available_to = COALESCE((SELECT MAX(day) FROM cycle_availability WHERE cycle_id = ?), '') WHERE id = ?",
+            cycleId, cycleId, cycleId);
+    }
+
+    /** Availability rows for API output: upcoming days only, earliest first. */
+    static List<Object> availabilityRows(long cycleId) {
+        String today = java.time.LocalDate.now().toString();
+        List<Object> out = new ArrayList<>();
+        for (Map<String, Object> a : Db.query(
+                "SELECT * FROM cycle_availability WHERE cycle_id = ? AND day >= ? ORDER BY day LIMIT 30", cycleId, today)) {
+            Map<String, Object> row = new HashMap<>();
+            row.put("id", a.get("id"));
+            row.put("day", a.get("day"));
+            row.put("pickupFrom", a.get("pickup_from"));
+            row.put("returnBy", a.get("return_by"));
+            out.add(row);
+        }
+        return out;
     }
 
     /** DELETE /api/cycles/{id} - removes the listing but keeps booking history (BR-10). */
@@ -252,9 +350,13 @@ public final class CycleHandlers {
         out.put("condition", c.get("condition_note"));
         out.put("description", c.get("description"));
         out.put("pricePerDay", c.get("price_per_day"));
+        Object hourly = c.get("price_per_hour");
+        out.put("pricePerHour", hourly != null ? hourly
+            : Math.round(((Number) c.get("price_per_day")).doubleValue() / 24.0 * 100.0) / 100.0);
         out.put("location", c.get("location"));
         out.put("availableFrom", c.get("available_from"));
         out.put("availableTo", c.get("available_to"));
+        out.put("availability", availabilityRows(((Number) c.get("id")).longValue()));
         out.put("status", c.get("status"));
         out.put("createdAt", c.get("created_at"));
 

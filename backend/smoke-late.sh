@@ -10,10 +10,12 @@ jqv() { jq -r "$2" <<<"$1"; }
 sql() { python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute(sys.argv[2]); c.commit()" "$DB_FILE" "$1"; }
 post() { curl -s -X POST "$BASE$1" -H "Authorization: Bearer $2" -H 'Content-Type: application/json' ${3:+-d "$3"}; }
 
-TA=$(jqv "$(post /api/auth/register x '{"name":"Late Owner","email":"lo_be24@thapar.edu","phone":"1","password":"password1"}')" .token)
-TB=$(jqv "$(post /api/auth/register x '{"name":"Late Renter","email":"lr_be24@thapar.edu","phone":"2","password":"password1"}')" .token)
-CY=$(jqv "$(post /api/cycles $TA '{"title":"Late Test Cycle","pricePerDay":100,"location":"Main Gate","availableFrom":"2026-12-01","availableTo":"2026-12-31"}')" .id)
-BK=$(jqv "$(post /api/bookings $TB "{\"cycleId\":$CY,\"startDate\":\"2026-12-10\",\"endDate\":\"2026-12-12\"}")" .id)
+TA=$(jqv "$(post /api/auth/register x '{"name":"Late Owner","email":"lo_be24@thapar.edu","phone":"9111111111","password":"password1"}')" .token)
+TB=$(jqv "$(post /api/auth/register x '{"name":"Late Renter","email":"lr_be24@thapar.edu","phone":"9222222222","password":"password1"}')" .token)
+CY=$(jqv "$(post /api/cycles $TA '{"title":"Late Test Cycle","pricePerHour":100,"location":"Main Gate"}')" .id)
+post /api/cycles/$CY/availability $TA '{"day":"2026-12-10","pickupFrom":"09:00","returnBy":"18:00"}' >/dev/null
+post /api/cycles/$CY/availability $TA '{"day":"2026-12-20","pickupFrom":"09:00","returnBy":"18:00"}' >/dev/null
+BK=$(jqv "$(post /api/bookings $TB "{\"cycleId\":$CY,\"date\":\"2026-12-10\",\"startTime\":\"09:00\",\"endTime\":\"18:00\"}")" .id)
 post /api/bookings/$BK/accept $TA >/dev/null; post /api/bookings/$BK/pickup $TA >/dev/null; post /api/bookings/$BK/pickup $TB >/dev/null
 
 # Move the rental into the past: it ended 5 days before today.
@@ -38,7 +40,7 @@ R=$(post /api/bookings/$BK/return $TA)
 [ "$(jqv "$R" .status)" = "COMPLETED" ] && [ "$(jqv "$R" .lateDays)" = "3" ] && [ "$(jqv "$R" .fineAmount)" = "150" ]; check "owner's late confirmation does not increase the fine" $?
 
 # Return on the end date itself is not late.
-BK2=$(jqv "$(post /api/bookings $TB "{\"cycleId\":$CY,\"startDate\":\"2026-12-20\",\"endDate\":\"2026-12-21\"}")" .id)
+BK2=$(jqv "$(post /api/bookings $TB "{\"cycleId\":$CY,\"date\":\"2026-12-20\",\"startTime\":\"09:00\",\"endTime\":\"18:00\"}")" .id)
 post /api/bookings/$BK2/accept $TA >/dev/null; post /api/bookings/$BK2/pickup $TA >/dev/null; post /api/bookings/$BK2/pickup $TB >/dev/null
 TODAY=$(date +%F); sql "UPDATE bookings SET end_date='$TODAY' WHERE id=$BK2"
 R=$(post /api/bookings/$BK2/return $TB)

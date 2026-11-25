@@ -32,26 +32,59 @@ public final class BookingHandlers {
     static final String DEFAULT_START_TIME = "09:00";
     static final String DEFAULT_END_TIME = "18:00";
 
-    /** Returns the given HH:MM time if valid, otherwise the fallback. */
+    /**
+     * Returns the given HH:MM time if valid, otherwise the fallback.
+     * Times are quarterly: the minutes must be 00, 15, 30 or 45 (user-confirmed rule).
+     */
     static String validTimeOr(String value, String fallback) {
         if (value == null || value.isEmpty()) return fallback;
         if (!value.matches("^([01][0-9]|2[0-3]):[0-5][0-9]$")) {
             throw new ApiException(400, "Time must be in HH:MM format (e.g. 09:30)");
         }
+        int minutes = Integer.parseInt(value.substring(3));
+        if (minutes % 15 != 0) {
+            throw new ApiException(400, "Times must be in 15-minute steps (e.g. 09:00, 09:15, 09:30, 09:45)");
+        }
         return value;
     }
 
+    /** Minutes between two HH:MM times on the same day. */
+    static long minutesBetween(String startTime, String endTime) {
+        return (Long.parseLong(endTime.substring(0, 2)) * 60 + Long.parseLong(endTime.substring(3)))
+             - (Long.parseLong(startTime.substring(0, 2)) * 60 + Long.parseLong(startTime.substring(3)));
+    }
+
+    /**
+     * Rental price: proportional to the exact time booked (user-confirmed rule:
+     * 75 minutes costs 1.25 x the hourly rate). Rounded to the nearest paisa.
+     */
+    static double priceFor(double pricePerHour, String startTime, String endTime) {
+        double hours = minutesBetween(startTime, endTime) / 60.0;
+        return Math.round(hours * pricePerHour * 100.0) / 100.0;
+    }
+
+    /**
+     * POST /api/bookings  {cycleId, date, startTime, endTime} - FR-10 rental request.
+     * Rentals are single-day: the renter picks one of the owner's availability
+     * days and a pickup/return time inside that day's window, and pays the
+     * hourly rate for the exact time booked. The total price is calculated here
+     * and returned so the renter sees the amount before committing (FR-16, BR-09).
+     */
     public static void create(HttpExchange ex) throws Exception {
         Map<String, Object> user = Auth.requireUser(ex.getRequestHeaders().getFirst("Authorization"));
         Map<String, Object> body = Api.bodyJson(ex);
         long cycleId = (long) Json.num(body, "cycleId");
-        String start = Json.str(body, "startDate");
-        String end = Json.str(body, "endDate");
-        CycleHandlers.validateDates(start, end);
-        String startTime = validTimeOr(Json.strOrNull(body, "startTime"), DEFAULT_START_TIME);
-        String endTime = validTimeOr(Json.strOrNull(body, "endTime"), DEFAULT_END_TIME);
-        if ((start + " " + startTime).compareTo(end + " " + endTime) >= 0) {
-            throw new ApiException(400, "The return time must be after the pickup time");
+        String date = Json.strOrNull(body, "date");
+        if (date == null) date = Json.strOrNull(body, "startDate"); // older clients sent startDate
+        if (date == null || !date.matches("\\d{4}-\\d{2}-\\d{2}")) {
+            throw new ApiException(400, "Please choose a rental date in YYYY-MM-DD format");
+        }
+        String endDate = Json.strOrNull(body, "endDate");
+        if (endDate != null && !endDate.equals(date)) {
+            throw new ApiException(400, "Rentals are for a single day now - pick a date with a pickup and return time");
+        }
+        if (date.compareTo(LocalDate.now().toString()) < 0) {
+            throw new ApiException(400, "Please choose a date from today onwards");
         }
 
         Map<String, Object> cycle = Db.queryOne("SELECT * FROM cycles WHERE id = ?", cycleId);
@@ -62,28 +95,42 @@ public final class BookingHandlers {
         if (ownerId == renterId) throw new ApiException(400, "You cannot rent your own cycle");   // BR-03
         if (!"AVAILABLE".equals(cycle.get("status"))) throw new ApiException(409, "This cycle is not available right now");
 
-        // BR-04: the listing's availability window must cover the whole rental.
-        if (((String) cycle.get("available_from")).compareTo(start) > 0
-                || ((String) cycle.get("available_to")).compareTo(end) < 0) {
-            throw new ApiException(409, "The cycle is only available from "
-                + cycle.get("available_from") + " to " + cycle.get("available_to"));
+        // BR-04: the owner makes the cycle available on specific days, each with a
+        // pickup/return time window. The rental must fit inside that day's window.
+        Map<String, Object> window = Db.queryOne(
+            "SELECT * FROM cycle_availability WHERE cycle_id = ? AND day = ?", cycleId, date);
+        if (window == null) {
+            throw new ApiException(409, "The owner has not made this cycle available on " + date);
+        }
+        String windowFrom = (String) window.get("pickup_from");
+        String windowTo = (String) window.get("return_by");
+        String startTime = validTimeOr(Json.strOrNull(body, "startTime"), windowFrom);
+        String endTime = validTimeOr(Json.strOrNull(body, "endTime"), windowTo);
+        if (startTime.compareTo(endTime) >= 0) {
+            throw new ApiException(400, "The return time must be after the pickup time");
+        }
+        if (startTime.compareTo(windowFrom) < 0 || endTime.compareTo(windowTo) > 0) {
+            throw new ApiException(409, "On " + date + " this cycle can be picked up from "
+                + windowFrom + " and must be returned by " + windowTo);
         }
         // FR-13 / BR-05: no overlap with confirmed bookings (compares date + time).
-        if (hasOverlap(cycleId, start, startTime, end, endTime)) {
+        if (hasOverlap(cycleId, date, startTime, date, endTime)) {
             throw new ApiException(409, "This cycle is already booked for (part of) that period");
         }
 
-        double pricePerDay = ((Number) cycle.get("price_per_day")).doubleValue();
-        long days = ChronoUnit.DAYS.between(LocalDate.parse(start), LocalDate.parse(end)) + 1; // inclusive
-        double total = Math.round(days * pricePerDay * 100.0) / 100.0;
+        Number hourly = (Number) cycle.get("price_per_hour");
+        double pricePerHour = hourly != null
+            ? hourly.doubleValue()
+            : Math.round(((Number) cycle.get("price_per_day")).doubleValue() / 24.0 * 100.0) / 100.0;
+        double total = priceFor(pricePerHour, startTime, endTime);
 
         long id = Db.execute(
             "INSERT INTO bookings (cycle_id, renter_id, start_date, end_date, start_time, end_time, total_amount, status, created_at, updated_at)" +
             " VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', " + Auth.now() + ", " + Auth.now() + ")",
-            cycleId, renterId, start, end, startTime, endTime, total);
+            cycleId, renterId, date, date, startTime, endTime, total);
 
         notifyUser(ownerId, "BOOKING_REQUEST",
-            user.get("name") + " requested \"" + cycle.get("title") + "\" from " + start + " " + startTime + " to " + end + " " + endTime);
+            user.get("name") + " requested \"" + cycle.get("title") + "\" on " + date + " from " + startTime + " to " + endTime);
 
         Api.sendJson(ex, 201, getBooking(id, user));
     }

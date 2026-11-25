@@ -14,6 +14,10 @@ export default function Register() {
   async function submit(e) {
     e.preventDefault()
     setError('')
+    if (form.phone && !/^\d{10}$/.test(form.phone)) {
+      setError('Phone number must be exactly 10 digits')
+      return
+    }
     setBusy(true)
     try {
       const data = await request('POST', '/api/auth/register', form)
@@ -52,8 +56,8 @@ export default function Register() {
           <label>Thapar email ID</label>
           <input type="email" value={form.email} onChange={set('email')} placeholder="yourname_be24@thapar.edu" required />
           <p className="muted">Only Thapar University email IDs (ending in @thapar.edu) can create an account.</p>
-          <label>Phone</label>
-          <input value={form.phone} onChange={set('phone')} />
+          <label>Phone (10 digits)</label>
+          <input value={form.phone} onChange={set('phone')} inputMode="numeric" maxLength={10} placeholder="9876543210" />
           <label>Password (min 6 characters)</label>
           <input type="password" value={form.password} onChange={set('password')} required />
           <div className="button-row">

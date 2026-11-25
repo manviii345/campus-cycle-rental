@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end smoke test: exercises every SRS workflow against a running server.
+# Rentals are single-day with hourly pricing and 15-minute time steps.
 # Usage: BASE=http://localhost:8080 ./smoke-test.sh
 set -u
 BASE="${BASE:-http://localhost:8080}"
@@ -17,11 +18,26 @@ R=$(curl -s "$BASE/health"); [ "$(jqv "$R" .status)" = "ok" ]; check "health end
 
 # 2. Register two users (Asha the owner, Ram the renter)
 R=$(curl -s -X POST "$BASE/api/auth/register" -H 'Content-Type: application/json' \
-  -d '{"name":"Asha Owner","email":"asha_be24@thapar.edu","phone":"+91111","password":"secret1"}')
+  -d '{"name":"Asha Owner","email":"asha_be24@thapar.edu","phone":"9111111111","password":"secret1"}')
 TOKEN_A=$(jqv "$R" .token); [ "${#TOKEN_A}" -gt 20 ]; check "register owner" $?
 R=$(curl -s -X POST "$BASE/api/auth/register" -H 'Content-Type: application/json' \
-  -d '{"name":"Ram Renter","email":"ram_be24@thapar.edu","phone":"+91222","password":"secret2"}')
+  -d '{"name":"Ram Renter","email":"ram_be24@thapar.edu","phone":"9222222222","password":"secret2"}')
 TOKEN_B=$(jqv "$R" .token); [ "${#TOKEN_B}" -gt 20 ]; check "register renter" $?
+
+# 2b. Phone validation: must be exactly 10 digits
+R=$(curl -s -X POST "$BASE/api/auth/register" -H 'Content-Type: application/json' \
+  -d '{"name":"Short Phone","email":"short_be24@thapar.edu","phone":"987654321","password":"secret1"}')
+[ "$(jqv "$R" .error)" = "Phone number must be exactly 10 digits" ]; check "9-digit phone rejected at register" $?
+R=$(curl -s -X POST "$BASE/api/auth/register" -H 'Content-Type: application/json' \
+  -d '{"name":"Long Phone","email":"long_be24@thapar.edu","phone":"98765432109","password":"secret1"}')
+[ "$(jqv "$R" .error)" = "Phone number must be exactly 10 digits" ]; check "11-digit phone rejected at register" $?
+R=$(curl -s -X POST "$BASE/api/auth/register" -H 'Content-Type: application/json' \
+  -d '{"name":"Alpha Phone","email":"alpha_be24@thapar.edu","phone":"98765abcd0","password":"secret1"}')
+[ "$(jqv "$R" .error)" = "Phone number must be exactly 10 digits" ]; check "non-digit phone rejected at register" $?
+R=$(curl -s -X PUT "$BASE/api/me" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' -d '{"phone":"12345"}')
+[ "$(jqv "$R" .error)" = "Phone number must be exactly 10 digits" ]; check "short phone rejected on profile update" $?
+R=$(curl -s -X PUT "$BASE/api/me" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' -d '{"phone":"9876543210"}')
+[ "$(jqv "$R" .phone)" = "9876543210" ]; check "10-digit phone accepted on profile update" $?
 
 # 3. Duplicate email rejected
 R=$(curl -s -X POST "$BASE/api/auth/register" -H 'Content-Type: application/json' \
@@ -44,10 +60,45 @@ R=$(curl -s -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' \
   -d '{"email":"outsider@gmail.com","password":"secret9"}')
 [ "$(jqv "$R" .error)" = "This website is only for Thapar University students. Please log in with your Thapar email ID (ending in @thapar.edu)" ]; check "non-Thapar login shows clear error" $?
 
-# 5. Owner creates a listing (Rs. 150/day, available all of December)
+# 5. Owner creates a listing (Rs. 100/hour); missing price rejected
 R=$(curl -s -X POST "$BASE/api/cycles" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' \
-  -d '{"title":"Hero Sprint 26T","brand":"Hero","model":"Sprint","cycleType":"City","condition":"Good","description":"Sturdy city cycle","pricePerDay":150,"location":"Main Gate, TIET campus","availableFrom":"2026-12-01","availableTo":"2026-12-31"}')
-CYCLE_ID=$(jqv "$R" .id); [ "$CYCLE_ID" -gt 0 ] 2>/dev/null; check "create listing" $?
+  -d '{"title":"No Price Cycle"}')
+[ "$(jqv "$R" .error)" = "Price per hour must be greater than zero" ]; check "listing without price rejected" $?
+R=$(curl -s -X POST "$BASE/api/cycles" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' \
+  -d '{"title":"Hero Sprint 26T","brand":"Hero","model":"Sprint","cycleType":"City","condition":"Good","description":"Sturdy city cycle","pricePerHour":100,"location":"Main Gate, TIET campus"}')
+CYCLE_ID=$(jqv "$R" .id); [ "$CYCLE_ID" -gt 0 ] 2>/dev/null; check "create listing (hourly price)" $?
+[ "$(jqv "$R" .pricePerHour)" = "100" ]; check "listing stores hourly rate" $?
+
+# 5b. Availability days: the owner adds days with a pickup/return window
+R=$(curl -s -X POST "$BASE/api/cycles/$CYCLE_ID/availability" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' \
+  -d '{"day":"2026-12-10","pickupFrom":"09:00","returnBy":"18:00"}')
+[ "$(jqv "$R" '.[0].day')" = "2026-12-10" ]; check "owner adds an availability day" $?
+for D in 2026-12-11 2026-12-12 2026-12-20 2026-12-25; do
+  curl -s -X POST "$BASE/api/cycles/$CYCLE_ID/availability" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' \
+    -d "{\"day\":\"$D\",\"pickupFrom\":\"09:00\",\"returnBy\":\"18:00\"}" > /dev/null
+done
+R=$(curl -s "$BASE/api/cycles/$CYCLE_ID/availability" -H "Authorization: Bearer $TOKEN_B")
+[ "$(jqv "$R" 'length')" = "5" ]; check "availability list shows all days" $?
+# Non-owner cannot add days
+C=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/cycles/$CYCLE_ID/availability" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
+  -d '{"day":"2026-12-13","pickupFrom":"09:00","returnBy":"18:00"}')
+[ "$C" = "403" ]; check "non-owner cannot add availability" $?
+# Non-quarter-hour window rejected
+R=$(curl -s -X POST "$BASE/api/cycles/$CYCLE_ID/availability" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' \
+  -d '{"day":"2026-12-13","pickupFrom":"09:10","returnBy":"18:00"}')
+[ "$(jqv "$R" .error)" = "Times must be in 15-minute steps (e.g. 09:00, 09:15, 09:30, 09:45)" ]; check "non-quarter-hour window rejected" $?
+# Past day rejected
+R=$(curl -s -X POST "$BASE/api/cycles/$CYCLE_ID/availability" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' \
+  -d '{"day":"2020-01-01","pickupFrom":"09:00","returnBy":"18:00"}')
+[ "$(jqv "$R" .error)" = "Please choose a day from today onwards" ]; check "past availability day rejected" $?
+# Replacing a day's window works
+curl -s -X POST "$BASE/api/cycles/$CYCLE_ID/availability" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' \
+  -d '{"day":"2026-12-12","pickupFrom":"10:00","returnBy":"16:00"}' > /dev/null
+R=$(curl -s "$BASE/api/cycles/$CYCLE_ID/availability" -H "Authorization: Bearer $TOKEN_A")
+[ "$(jqv "$R" '[.[] | select(.day == "2026-12-12")] | .[0].pickupFrom')" = "10:00" ] && [ "$(jqv "$R" '[.[] | select(.day == "2026-12-12")] | length')" = "1" ]; check "re-adding a day replaces its window" $?
+# Summary fields stay in sync
+R=$(curl -s "$BASE/api/cycles/$CYCLE_ID" -H "Authorization: Bearer $TOKEN_A")
+[ "$(jqv "$R" .availableFrom)" = "2026-12-10" ] && [ "$(jqv "$R" .availableTo)" = "2026-12-25" ]; check "available_from/to summary tracks the days" $?
 
 # 6. Photo upload (1x1 PNG)
 printf '\x89PNG\r\n\x1a\n' > /tmp/tiny.png
@@ -56,29 +107,62 @@ R=$(curl -s -X POST "$BASE/api/cycles/$CYCLE_ID/photos" -H "Authorization: Beare
 PHOTO_URL=$(jqv "$R" .url); [ -n "$PHOTO_URL" ] && [ "$PHOTO_URL" != "null" ]; check "photo upload" $?
 C=$(curl -s -o /dev/null -w '%{http_code}' "$BASE$PHOTO_URL"); [ "$C" = "200" ]; check "photo is served" $?
 
-# 7. Search finds it with filters
-R=$(curl -s "$BASE/api/cycles?query=hero&maxPrice=200&from=2026-12-10&to=2026-12-12" -H "Authorization: Bearer $TOKEN_B")
-[ "$(jqv "$R" '.[0].id')" = "$CYCLE_ID" ]; check "search with filters" $?
-R=$(curl -s "$BASE/api/cycles?maxPrice=100" -H "Authorization: Bearer $TOKEN_B"); [ "$(jqv "$R" 'length')" = "0" ]; check "price filter excludes" $?
+# 7. Search: keyword + hourly price filter + single-day time search
+R=$(curl -s "$BASE/api/cycles?query=hero&maxPrice=200&date=2026-12-10&timeFrom=10:00&timeTo=12:00" -H "Authorization: Bearer $TOKEN_B")
+[ "$(jqv "$R" '.[0].id')" = "$CYCLE_ID" ]; check "search with filters + day/time" $?
+R=$(curl -s "$BASE/api/cycles?maxPrice=50" -H "Authorization: Bearer $TOKEN_B"); [ "$(jqv "$R" 'length')" = "0" ]; check "hourly price filter excludes" $?
+R=$(curl -s "$BASE/api/cycles?date=2026-12-15" -H "Authorization: Bearer $TOKEN_B")
+[ "$(jqv "$R" '[.[] | select(.id == '$CYCLE_ID')] | length')" = "0" ]; check "day without availability excluded from search" $?
+R=$(curl -s "$BASE/api/cycles?date=2026-12-10&timeFrom=06:00&timeTo=08:00" -H "Authorization: Bearer $TOKEN_B")
+[ "$(jqv "$R" '[.[] | select(.id == '$CYCLE_ID')] | length')" = "0" ]; check "search outside the day's window excluded" $?
+R=$(curl -s "$BASE/api/cycles?date=2026-12-10&timeFrom=10:10&timeTo=12:00" -H "Authorization: Bearer $TOKEN_B")
+[ "$(jqv "$R" .error)" = "Times must be in 15-minute steps (e.g. 09:00, 09:15, 09:30, 09:45)" ]; check "non-quarter-hour search time rejected" $?
 
-# 8. Renter requests a booking (3 days -> Rs. 450)
+# 8. Renter requests a booking: 2026-12-10 10:00-12:30 = 2.5 hours x Rs. 100 = Rs. 250
 R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
-  -d "{\"cycleId\":$CYCLE_ID,\"startDate\":\"2026-12-10\",\"endDate\":\"2026-12-12\"}")
-BOOKING_ID=$(jqv "$R" .id); [ "$(jqv "$R" .totalAmount)" = "450" ]; check "booking request with price calc" $?
+  -d "{\"cycleId\":$CYCLE_ID,\"date\":\"2026-12-10\",\"startTime\":\"10:00\",\"endTime\":\"12:30\"}")
+BOOKING_ID=$(jqv "$R" .id); [ "$(jqv "$R" .totalAmount)" = "250" ]; check "booking request with hourly price calc (2.5h = Rs. 250)" $?
 
-# 8b. Overlapping PENDING request is allowed while nothing is confirmed yet (BR-05)
+# 8b. Proportional quarter-hour billing: 75 minutes = 1.25 x hourly rate (Rs. 125)
 R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
-  -d "{\"cycleId\":$CYCLE_ID,\"startDate\":\"2026-12-11\",\"endDate\":\"2026-12-13\"}")
+  -d "{\"cycleId\":$CYCLE_ID,\"date\":\"2026-12-11\",\"startTime\":\"10:00\",\"endTime\":\"11:15\"}")
+BK75=$(jqv "$R" .id); [ "$(jqv "$R" .totalAmount)" = "125" ]; check "75-minute booking costs 1.25x hourly rate" $?
+curl -s -X POST "$BASE/api/bookings/$BK75/cancel" -H "Authorization: Bearer $TOKEN_B" > /dev/null
+
+# 8c. Times default to the day's window when omitted (9 hours x Rs. 100 = Rs. 900)
+R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
+  -d "{\"cycleId\":$CYCLE_ID,\"date\":\"2026-12-12\"}")
+[ "$(jqv "$R" .startTime)" = "10:00" ] && [ "$(jqv "$R" .endTime)" = "16:00" ] && [ "$(jqv "$R" .totalAmount)" = "600" ]; check "omitted times default to the day's window" $?
+BKDEF=$(jqv "$R" .id); curl -s -X POST "$BASE/api/bookings/$BKDEF/cancel" -H "Authorization: Bearer $TOKEN_B" > /dev/null
+
+# 8d. Overlapping PENDING request is allowed while nothing is confirmed yet (BR-05)
+R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
+  -d "{\"cycleId\":$CYCLE_ID,\"date\":\"2026-12-10\",\"startTime\":\"11:00\",\"endTime\":\"13:00\"}")
 REQ2_ID=$(jqv "$R" .id); [ "$(jqv "$R" .status)" = "PENDING" ]; check "overlapping pending request allowed" $?
 
-# 8c. Request outside the listing's availability window is rejected (BR-04)
+# 8e. Validation: window, availability day, single-day rule, quarter hours, order, past date
 C=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
-  -d "{\"cycleId\":$CYCLE_ID,\"startDate\":\"2027-01-05\",\"endDate\":\"2027-01-07\"}")
-[ "$C" = "409" ]; check "outside availability window rejected (409)" $?
+  -d "{\"cycleId\":$CYCLE_ID,\"date\":\"2026-12-10\",\"startTime\":\"06:00\",\"endTime\":\"08:00\"}")
+[ "$C" = "409" ]; check "booking outside the day's window rejected (409)" $?
+R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
+  -d "{\"cycleId\":$CYCLE_ID,\"date\":\"2026-12-15\",\"startTime\":\"10:00\",\"endTime\":\"12:00\"}")
+[ "$(jqv "$R" .error)" = "The owner has not made this cycle available on 2026-12-15" ]; check "day without availability rejected" $?
+R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
+  -d "{\"cycleId\":$CYCLE_ID,\"startDate\":\"2026-12-10\",\"endDate\":\"2026-12-12\"}")
+[ "$(jqv "$R" .error)" = "Rentals are for a single day now - pick a date with a pickup and return time" ]; check "multi-day booking rejected" $?
+R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
+  -d "{\"cycleId\":$CYCLE_ID,\"date\":\"2026-12-11\",\"startTime\":\"10:07\",\"endTime\":\"12:00\"}")
+[ "$(jqv "$R" .error)" = "Times must be in 15-minute steps (e.g. 09:00, 09:15, 09:30, 09:45)" ]; check "non-quarter-hour booking time rejected" $?
+R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
+  -d "{\"cycleId\":$CYCLE_ID,\"date\":\"2026-12-11\",\"startTime\":\"14:00\",\"endTime\":\"11:00\"}")
+[ "$(jqv "$R" .error)" = "The return time must be after the pickup time" ]; check "return before pickup rejected" $?
+R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
+  -d "{\"cycleId\":$CYCLE_ID,\"date\":\"2020-06-01\",\"startTime\":\"10:00\",\"endTime\":\"12:00\"}")
+[ "$(jqv "$R" .error)" = "Please choose a date from today onwards" ]; check "past booking date rejected" $?
 
-# 9. Renter cannot book own cycle; overlapping confirmed booking blocked later
+# 9. Renter cannot book own cycle (BR-03)
 R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' \
-  -d "{\"cycleId\":$CYCLE_ID,\"startDate\":\"2026-12-05\",\"endDate\":\"2026-12-06\"}")
+  -d "{\"cycleId\":$CYCLE_ID,\"date\":\"2026-12-10\",\"startTime\":\"14:00\",\"endTime\":\"16:00\"}")
 [ "$(jqv "$R" .error)" = "You cannot rent your own cycle" ]; check "BR-03 own-cycle rejected" $?
 
 # 10. Renter cannot accept; owner accepts
@@ -95,7 +179,7 @@ R=$(curl -s -X POST "$BASE/api/bookings/$REQ2_ID/reject" -H "Authorization: Bear
 
 # 10d. Renter cancels an accepted booking before pickup (FR-15)
 R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
-  -d "{\"cycleId\":$CYCLE_ID,\"startDate\":\"2026-12-20\",\"endDate\":\"2026-12-22\"}")
+  -d "{\"cycleId\":$CYCLE_ID,\"date\":\"2026-12-20\",\"startTime\":\"09:00\",\"endTime\":\"10:00\"}")
 REQ3_ID=$(jqv "$R" .id)
 curl -s -X POST "$BASE/api/bookings/$REQ3_ID/accept" -H "Authorization: Bearer $TOKEN_A" > /dev/null
 R=$(curl -s -X POST "$BASE/api/bookings/$REQ3_ID/cancel" -H "Authorization: Bearer $TOKEN_B")
@@ -107,17 +191,13 @@ R=$(curl -s "$BASE/api/bookings/mine?role=owner" -H "Authorization: Bearer $TOKE
 
 # 10e. Concurrent acceptance: two overlapping pending requests accepted at the same moment -> exactly one wins
 R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
-  -d "{\"cycleId\":$CYCLE_ID,\"startDate\":\"2026-12-25\",\"endDate\":\"2026-12-27\"}"); CA=$(jqv "$R" .id)
+  -d "{\"cycleId\":$CYCLE_ID,\"date\":\"2026-12-25\",\"startTime\":\"09:00\",\"endTime\":\"12:00\"}"); CA=$(jqv "$R" .id)
 R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
-  -d "{\"cycleId\":$CYCLE_ID,\"startDate\":\"2026-12-26\",\"endDate\":\"2026-12-28\"}"); CB=$(jqv "$R" .id)
-WINS=0
-for i in 1; do
-  curl -s -o /tmp/cc_a.$i -w '%{http_code}' -X POST "$BASE/api/bookings/$CA/accept" -H "Authorization: Bearer $TOKEN_A" > /tmp/cc_ca.$i 2>/dev/null &
-  curl -s -o /tmp/cc_b.$i -w '%{http_code}' -X POST "$BASE/api/bookings/$CB/accept" -H "Authorization: Bearer $TOKEN_A" > /tmp/cc_cb.$i 2>/dev/null &
-  wait
-  break
-done
-OKS=$( (cat /tmp/cc_ca.1; echo; cat /tmp/cc_cb.1; echo) | grep -c '^200$')
+  -d "{\"cycleId\":$CYCLE_ID,\"date\":\"2026-12-25\",\"startTime\":\"10:00\",\"endTime\":\"13:00\"}"); CB=$(jqv "$R" .id)
+curl -s -o /tmp/cc_a -w '%{http_code}' -X POST "$BASE/api/bookings/$CA/accept" -H "Authorization: Bearer $TOKEN_A" > /tmp/cc_ca 2>/dev/null &
+curl -s -o /tmp/cc_b -w '%{http_code}' -X POST "$BASE/api/bookings/$CB/accept" -H "Authorization: Bearer $TOKEN_A" > /tmp/cc_cb 2>/dev/null &
+wait
+OKS=$( (cat /tmp/cc_ca; echo; cat /tmp/cc_cb; echo) | grep -c '^200$')
 [ "$OKS" = "1" ]; check "concurrent accept: exactly one of two overlapping bookings accepted" $?
 R=$(curl -s "$BASE/api/bookings/mine?role=owner" -H "Authorization: Bearer $TOKEN_A")
 N=$(jqv "$R" '[.[] | select(.id == '$CA' or .id == '$CB') | select(.status == "ACCEPTED")] | length')
@@ -125,13 +205,29 @@ N=$(jqv "$R" '[.[] | select(.id == '$CA' or .id == '$CB') | select(.status == "A
 # Clean up the winner so later steps are unaffected
 for X in $CA $CB; do curl -s -X POST "$BASE/api/bookings/$X/cancel" -H "Authorization: Bearer $TOKEN_B" > /dev/null; done
 
-# 11. Overlap: a new request over the accepted period must fail (FR-13)
+# 11. Overlap: a new request over the accepted slot must fail (FR-13)
 R=$(curl -s -X POST "$BASE/api/cycles" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' \
-  -d '{"title":"Second Cycle","pricePerDay":100,"availableFrom":"2026-12-01","availableTo":"2026-12-31"}')
+  -d '{"title":"Second Cycle","pricePerHour":50}')
 CYCLE2=$(jqv "$R" .id)
 R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
-  -d "{\"cycleId\":$CYCLE_ID,\"startDate\":\"2026-12-11\",\"endDate\":\"2026-12-13\"}")
+  -d "{\"cycleId\":$CYCLE_ID,\"date\":\"2026-12-10\",\"startTime\":\"12:00\",\"endTime\":\"13:00\"}")
 [ "$(jqv "$R" .error)" = "This cycle is already booked for (part of) that period" ]; check "overlap rejected at request" $?
+
+# 11b. Timing search: a confirmed booking overlapping the requested slot hides the cycle
+R=$(curl -s "$BASE/api/cycles?date=2026-12-10&timeFrom=11:00&timeTo=12:00" -H "Authorization: Bearer $TOKEN_B")
+[ "$(jqv "$R" '[.[] | select(.id == '$CYCLE_ID')] | length')" = "0" ]; check "timing search excludes an overlapping booking" $?
+R=$(curl -s "$BASE/api/cycles?date=2026-12-10&timeFrom=13:00&timeTo=15:00" -H "Authorization: Bearer $TOKEN_B")
+[ "$(jqv "$R" '[.[] | select(.id == '$CYCLE_ID')] | length')" = "1" ]; check "timing search finds a free slot" $?
+
+# 11c. A day with a pending booking cannot be removed; a free day can
+R=$(curl -s -X POST "$BASE/api/cycles/$CYCLE_ID/availability" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' \
+  -d '{"day":"2026-12-28","pickupFrom":"09:00","returnBy":"12:00"}')
+AV_ID=$(jqv "$R" '[.[] | select(.day == "2026-12-28")] | .[0].id')
+R=$(curl -s -X DELETE "$BASE/api/cycles/$CYCLE_ID/availability/$AV_ID" -H "Authorization: Bearer $TOKEN_A")
+[ "$(jqv "$R" '[.[] | select(.day == "2026-12-28")] | length')" = "0" ]; check "owner removes a free availability day" $?
+AV_BOOKED=$(curl -s "$BASE/api/cycles/$CYCLE_ID/availability" -H "Authorization: Bearer $TOKEN_A" | jq -r '[.[] | select(.day == "2026-12-10")] | .[0].id')
+C=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$BASE/api/cycles/$CYCLE_ID/availability/$AV_BOOKED" -H "Authorization: Bearer $TOKEN_A")
+[ "$C" = "409" ]; check "day with an accepted booking cannot be removed (409)" $?
 
 # 12. Contact details visible after acceptance (NFR-03)
 R=$(curl -s "$BASE/api/bookings/$BOOKING_ID" -H "Authorization: Bearer $TOKEN_B")
@@ -140,7 +236,7 @@ R=$(curl -s "$BASE/api/bookings/$BOOKING_ID" -H "Authorization: Bearer $TOKEN_B"
 # 13. Payment recorded (FR-17)
 R=$(curl -s -X POST "$BASE/api/bookings/$BOOKING_ID/payment" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
   -d '{"method":"UPI","transactionReference":"txn123"}')
-[ "$(jqv "$R" .payment.status)" = "RECORDED" ] && [ "$(jqv "$R" .payment.amount)" = "450" ]; check "payment recorded" $?
+[ "$(jqv "$R" .payment.status)" = "RECORDED" ] && [ "$(jqv "$R" .payment.amount)" = "250" ]; check "payment recorded" $?
 
 # 14. Two-sided pickup confirmation -> ACTIVE (FR-19)
 curl -s -X POST "$BASE/api/bookings/$BOOKING_ID/pickup" -H "Authorization: Bearer $TOKEN_A" > /dev/null
@@ -187,36 +283,11 @@ R=$(curl -s -X POST "$BASE/api/bookings/$BOOKING_ID/report" -H "Authorization: B
 C=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/cycles/mine"); [ "$C" = "401" ]; check "unauthenticated request rejected" $?
 C=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/cycles"); [ "$C" = "401" ]; check "cycle search hidden when logged out" $?
 C=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/cycles/$CYCLE_ID"); [ "$C" = "401" ]; check "cycle detail hidden when logged out" $?
+C=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/cycles/$CYCLE_ID/availability"); [ "$C" = "401" ]; check "availability hidden when logged out" $?
 
-# 19b. Rental times: booking stores pickup/return times and they show on the booking
-R=$(curl -s -X POST "$BASE/api/cycles" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' \
-  -d '{"title":"Timed Cycle","pricePerDay":100,"location":"Library","availableFrom":"2027-01-01","availableTo":"2027-01-31"}')
-CYCLE_T=$(jqv "$R" .id)
-R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
-  -d '{"cycleId":'$CYCLE_T',"startDate":"2027-01-10","endDate":"2027-01-12","startTime":"08:30","endTime":"20:15"}')
-BKT=$(jqv "$R" .id)
-R=$(curl -s "$BASE/api/bookings/$BKT" -H "Authorization: Bearer $TOKEN_B")
-[ "$(jqv "$R" .startTime)" = "08:30" ] && [ "$(jqv "$R" .endTime)" = "20:15" ]; check "booking stores pickup and return times" $?
-# Same-day booking must end after it starts
-R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
-  -d '{"cycleId":'$CYCLE_T',"startDate":"2027-01-15","endDate":"2027-01-15","startTime":"18:00","endTime":"09:00"}')
-[ "$(jqv "$R" .error)" = "The return time must be after the pickup time" ]; check "same-day booking with end before start rejected" $?
-# A same-day booking with valid times is allowed
-R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
-  -d '{"cycleId":'$CYCLE_T',"startDate":"2027-01-16","endDate":"2027-01-16","startTime":"09:00","endTime":"11:00"}')
-BKSD=$(jqv "$R" .id)
-[ "$BKSD" -gt 0 ] 2>/dev/null; check "same-day booking with valid times allowed" $?
-# Search by timings: a confirmed booking overlapping the requested slot hides the cycle
-curl -s -X POST "$BASE/api/bookings/$BKT/reject" -H "Authorization: Bearer $TOKEN_A" > /dev/null
-curl -s -X POST "$BASE/api/bookings/$BKSD/accept" -H "Authorization: Bearer $TOKEN_A" > /dev/null
-R=$(curl -s "$BASE/api/cycles?from=2027-01-16&to=2027-01-16&timeFrom=10:00&timeTo=12:00" -H "Authorization: Bearer $TOKEN_B")
-[ "$(jqv "$R" '[.[] | select(.id == '$CYCLE_T')] | length')" = "0" ]; check "timing search excludes an overlapping booking" $?
-R=$(curl -s "$BASE/api/cycles?from=2027-01-16&to=2027-01-16&timeFrom=12:00&timeTo=14:00" -H "Authorization: Bearer $TOKEN_B")
-[ "$(jqv "$R" '[.[] | select(.id == '$CYCLE_T')] | length')" = "1" ]; check "timing search finds a free slot" $?
-
-# 19c. The cycle owner must mark the cycle returned: renter initiates, owner completes
+# 20. The cycle owner must mark the cycle returned: renter initiates, owner completes
 BKT2=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
-  -d '{"cycleId":'$CYCLE_T',"startDate":"2027-01-20","endDate":"2027-01-21"}' | jq -r .id)
+  -d '{"cycleId":'$CYCLE_ID',"date":"2026-12-20","startTime":"10:00","endTime":"11:00"}' | jq -r .id)
 curl -s -X POST "$BASE/api/bookings/$BKT2/accept" -H "Authorization: Bearer $TOKEN_A" > /dev/null
 curl -s -X POST "$BASE/api/bookings/$BKT2/pickup" -H "Authorization: Bearer $TOKEN_A" > /dev/null
 curl -s -X POST "$BASE/api/bookings/$BKT2/pickup" -H "Authorization: Bearer $TOKEN_B" > /dev/null
@@ -227,7 +298,7 @@ R=$(curl -s -X POST "$BASE/api/bookings/$BKT2/return" -H "Authorization: Bearer 
 R=$(curl -s -X POST "$BASE/api/bookings/$BKT2/return" -H "Authorization: Bearer $TOKEN_A")
 [ "$(jqv "$R" .status)" = "COMPLETED" ]; check "owner marks returned, rental completes" $?
 
-# 20. Owner history includes the completed booking even after listing removal (BR-10)
+# 21. Owner history includes the completed booking even after listing removal (BR-10)
 R=$(curl -s -X DELETE "$BASE/api/cycles/$CYCLE2" -H "Authorization: Bearer $TOKEN_A"); [ "$(jqv "$R" .ok)" = "true" ]; check "listing removal" $?
 R=$(curl -s "$BASE/api/bookings/mine?role=renter" -H "Authorization: Bearer $TOKEN_B")
 [ "$(jqv "$R" '[.[] | select(.id == '$BOOKING_ID')] | .[0].status')" = "COMPLETED" ]; check "booking history kept" $?

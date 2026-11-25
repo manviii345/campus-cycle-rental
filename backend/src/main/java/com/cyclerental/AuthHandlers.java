@@ -23,6 +23,14 @@ public final class AuthHandlers {
 
     private AuthHandlers() {}
 
+    /** Phone numbers are optional, but when given they must be exactly 10 digits. */
+    static void requireValidPhone(String phone) {
+        if (phone == null || phone.isEmpty()) return;
+        if (!phone.matches("\\d{10}")) {
+            throw new ApiException(400, "Phone number must be exactly 10 digits");
+        }
+    }
+
     /** POST /api/auth/register  {name, email, phone, password} */
     public static void register(HttpExchange ex) throws Exception {
         Map<String, Object> body = Api.bodyJson(ex);
@@ -38,6 +46,7 @@ public final class AuthHandlers {
                 "Only Thapar University email IDs (ending in @thapar.edu) can be used to create an account");
         }
         if (password.length() < 6) throw new ApiException(400, "Password must be at least 6 characters");
+        requireValidPhone(phone);
 
         if (Db.queryOne("SELECT id FROM users WHERE email = ?", email) != null) {
             throw new ApiException(409, "An account with this email already exists");
@@ -100,6 +109,7 @@ public final class AuthHandlers {
         String phone = Json.strOrNull(body, "phone");
         if (name == null && phone == null) throw new ApiException(400, "Nothing to update");
         if (name != null && name.length() < 2) throw new ApiException(400, "Please enter your full name");
+        requireValidPhone(phone);
 
         Db.execute("UPDATE users SET name = COALESCE(?, name), phone = COALESCE(?, phone) WHERE id = ?",
             name, phone, Auth.userId(user));
