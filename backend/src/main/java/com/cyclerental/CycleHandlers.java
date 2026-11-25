@@ -124,9 +124,10 @@ public final class CycleHandlers {
                            " AND a.day = ? AND a.pickup_from <= ? AND a.return_by >= ? AND a.confirmed = 1)");
                 params.add(date); params.add(timeFrom); params.add(timeTo);
                 // ...and no confirmed booking may overlap the requested slot (BR-05 / FR-13).
+                // Strict inequalities: a slot starting exactly when another ends is free.
                 sql.append(" AND NOT EXISTS (SELECT 1 FROM bookings b WHERE b.cycle_id = c.id" +
                            " AND b.status IN ('ACCEPTED','ACTIVE')" +
-                           " AND (b.start_date || ' ' || b.start_time) <= ? AND (b.end_date || ' ' || b.end_time) >= ?)");
+                           " AND (b.start_date || ' ' || b.start_time) < ? AND (b.end_date || ' ' || b.end_time) > ?)");
                 params.add(date + " " + timeTo); params.add(date + " " + timeFrom);
             } else {
                 // Date only: the owner must have made the cycle available that day.

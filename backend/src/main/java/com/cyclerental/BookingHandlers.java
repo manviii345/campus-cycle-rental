@@ -363,14 +363,16 @@ public final class BookingHandlers {
     /**
      * True when the cycle has an ACCEPTED or ACTIVE booking overlapping the
      * requested window. Windows are compared as "YYYY-MM-DD HH:MM" strings,
-     * which sort chronologically. Bookings made before times existed have
-     * NULL times and fall back to full-day comparison.
+     * which sort chronologically. Strict inequalities: touching intervals do
+     * NOT overlap, so a rental may start at the exact time another ends
+     * (return at 10:00, next pickup at 10:00 is fine). Bookings made before
+     * times existed have NULL times and fall back to full-day comparison.
      */
     static boolean hasOverlap(long cycleId, String start, String startTime, String end, String endTime) {
         Map<String, Object> row = Db.queryOne(
             "SELECT COUNT(*) AS n FROM bookings WHERE cycle_id = ? AND status IN ('ACCEPTED','ACTIVE')" +
-            " AND (start_date || ' ' || COALESCE(start_time, '00:00')) <= ?" +
-            " AND (end_date || ' ' || COALESCE(end_time, '23:59')) >= ?",
+            " AND (start_date || ' ' || COALESCE(start_time, '00:00')) < ?" +
+            " AND (end_date || ' ' || COALESCE(end_time, '23:59')) > ?",
             cycleId, end + " " + endTime, start + " " + startTime);
         return ((Number) row.get("n")).longValue() > 0;
     }
