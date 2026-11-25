@@ -3,6 +3,14 @@ import { Link } from 'react-router-dom'
 import { request, formatMoney } from '../api.js'
 import Photo from '../Photo.jsx'
 
+// Fixed quarter-hour clock choices for the search times (user-confirmed rule).
+const TIME_OPTIONS = []
+for (let h = 0; h < 24; h++) {
+  for (const m of [0, 15, 30, 45]) {
+    TIME_OPTIONS.push(String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0'))
+  }
+}
+
 // FR-06 browse + FR-07 search by day and time interval only.
 export default function Browse() {
   const [filters, setFilters] = useState({ date: '', timeFrom: '', timeTo: '' })
@@ -34,8 +42,18 @@ export default function Browse() {
       <div className="card">
         <div className="filters">
           <div><label>Day</label><input type="date" value={filters.date} onChange={set('date')} /></div>
-          <div><label>Pickup time</label><input type="time" step="900" value={filters.timeFrom} onChange={set('timeFrom')} disabled={!filters.date} /></div>
-          <div><label>Return time</label><input type="time" step="900" value={filters.timeTo} onChange={set('timeTo')} disabled={!filters.date} /></div>
+          <div><label>Pickup time</label>
+            <select value={filters.timeFrom} onChange={set('timeFrom')} disabled={!filters.date}>
+              <option value="">--:--</option>
+              {TIME_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          <div><label>Return time</label>
+            <select value={filters.timeTo} onChange={set('timeTo')} disabled={!filters.date}>
+              <option value="">--:--</option>
+              {TIME_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
           <div><button onClick={() => load()}>Search</button></div>
         </div>
       </div>
