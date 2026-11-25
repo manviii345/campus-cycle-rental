@@ -116,6 +116,7 @@ public final class Db {
                 "day VARCHAR(10) NOT NULL, " +          // YYYY-MM-DD
                 "pickup_from VARCHAR(5) NOT NULL, " +  // HH:MM, 15-minute steps
                 "return_by VARCHAR(5) NOT NULL, " +    // HH:MM, 15-minute steps
+                "confirmed INT NOT NULL DEFAULT 1, " +  // 1 = owner set this day; 0 = leftover from an older migration
                 "created_at " + now + " NOT NULL, " +
                 "UNIQUE (cycle_id, day))",
 
@@ -199,6 +200,13 @@ public final class Db {
             // cannot be told apart from owner-set rates, so no listing is auto-confirmed here.
             try {
                 st.execute("ALTER TABLE cycles ADD COLUMN pricing_confirmed INT NOT NULL DEFAULT 0");
+            } catch (SQLException ignored) {
+                // column already exists - nothing to do
+            }
+            // Availability days from before owner confirmation existed start unconfirmed:
+            // the owner must re-save each day (add it again) before renters can book it.
+            try {
+                st.execute("ALTER TABLE cycle_availability ADD COLUMN confirmed INT NOT NULL DEFAULT 0");
             } catch (SQLException ignored) {
                 // column already exists - nothing to do
             }

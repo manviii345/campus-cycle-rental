@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { request, uploadPhoto, formatMoney } from '../api.js'
+import Photo from '../Photo.jsx'
 
 const EMPTY = {
   title: '', brand: '', model: '', cycleType: 'City', condition: 'Good',
@@ -99,6 +100,14 @@ export default function MyCycles() {
     setError('')
     try { await request('DELETE', `/api/cycles/${c.id}/availability/${availId}`); load() } catch (err) { setError(err.message) }
   }
+  // Re-saves a leftover day as-is: the owner's explicit keep, which confirms it for booking.
+  async function confirmDay(c, a) {
+    setError('')
+    try {
+      await request('POST', `/api/cycles/${c.id}/availability`, { day: a.day, pickupFrom: a.pickupFrom, returnBy: a.returnBy })
+      load()
+    } catch (err) { setError(err.message) }
+  }
 
   return (
     <div className="page">
@@ -151,7 +160,7 @@ export default function MyCycles() {
           <div className="photo-strip">
             {c.photos.map((p) => (
               <span key={p.id}>
-                <img src={p.url} alt="cycle" /><br />
+                <Photo url={p.url} alt="cycle" /><br />
                 <a href="#" onClick={(e) => { e.preventDefault(); deletePhoto(c, p.id) }}>remove</a>
               </span>
             ))}
@@ -164,6 +173,11 @@ export default function MyCycles() {
           {(c.availability || []).map((a) => (
             <p key={a.id} className="muted">
               {a.day} - pickup from {a.pickupFrom}, return by {a.returnBy}
+              {a.confirmed === false && (
+                <strong> (needs confirmation -{' '}
+                  <a href="#" onClick={(e) => { e.preventDefault(); confirmDay(c, a) }}>keep this day</a>)
+                </strong>
+              )}
               {' '}<a href="#" onClick={(e) => { e.preventDefault(); removeDay(c, a.id) }}>remove</a>
             </p>
           ))}

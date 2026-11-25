@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { request, getUser, formatMoney } from '../api.js'
+import Photo from '../Photo.jsx'
 
 // FR-08 listing details + FR-10 rental request with live price preview (FR-16, BR-09).
 // Rentals are single-day: pick one of the owner's days, then pickup and return
@@ -69,7 +70,7 @@ export default function CycleDetail() {
       <div className="card">
         <h2>{cycle.title} <span className={`badge ${cycle.status}`}>{cycle.status}</span></h2>
         <div className="photo-strip photo-hero">
-          {cycle.photos.map((p) => <img key={p.id} src={p.url} alt="cycle" />)}
+          {cycle.photos.map((p) => <Photo key={p.id} url={p.url} alt="cycle" />)}
           {cycle.photos.length === 0 && <span className="muted">No photos uploaded</span>}
         </div>
         <table>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { request, formatMoney } from '../api.js'
+import Photo from '../Photo.jsx'
 
 const CYCLE_TYPES = ['', 'City', 'Road', 'Mountain', 'Hybrid', 'Electric', 'Kids']
 
@@ -56,7 +57,7 @@ export default function Browse() {
       <div className="grid">
         {cycles.map((c) => (
           <div className="card cycle-card" key={c.id}>
-            {c.photos.length > 0 ? <img src={c.photos[0].url} alt={c.title} /> : <div className="no-photo">🚲</div>}
+            <Photo url={c.photos.length > 0 ? c.photos[0].url : null} alt={c.title} />
             <h3><Link to={`/cycles/${c.id}`}>{c.title}</Link></h3>
             <div className="muted">{c.brand} {c.model} {c.cycleType ? `- ${c.cycleType}` : ''}</div>
             <div className="muted">

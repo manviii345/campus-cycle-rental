@@ -121,7 +121,7 @@ public final class CycleHandlers {
                 timeTo = BookingHandlers.validTimeOr(timeTo, null);
                 // The day must have a window covering the requested interval (BR-04)...
                 sql.append(" AND EXISTS (SELECT 1 FROM cycle_availability a WHERE a.cycle_id = c.id" +
-                           " AND a.day = ? AND a.pickup_from <= ? AND a.return_by >= ?)");
+                           " AND a.day = ? AND a.pickup_from <= ? AND a.return_by >= ? AND a.confirmed = 1)");
                 params.add(date); params.add(timeFrom); params.add(timeTo);
                 // ...and no confirmed booking may overlap the requested slot (BR-05 / FR-13).
                 sql.append(" AND NOT EXISTS (SELECT 1 FROM bookings b WHERE b.cycle_id = c.id" +
@@ -130,7 +130,7 @@ public final class CycleHandlers {
                 params.add(date + " " + timeTo); params.add(date + " " + timeFrom);
             } else {
                 // Date only: the owner must have made the cycle available that day.
-                sql.append(" AND EXISTS (SELECT 1 FROM cycle_availability a WHERE a.cycle_id = c.id AND a.day = ?)");
+                sql.append(" AND EXISTS (SELECT 1 FROM cycle_availability a WHERE a.cycle_id = c.id AND a.day = ? AND a.confirmed = 1)");
                 params.add(date);
             }
         }
@@ -220,7 +220,7 @@ public final class CycleHandlers {
 
         Db.execute("DELETE FROM cycle_availability WHERE cycle_id = ? AND day = ?", id, day); // replace the day's window
         Db.execute(
-            "INSERT INTO cycle_availability (cycle_id, day, pickup_from, return_by, created_at) VALUES (?, ?, ?, ?, " + Auth.now() + ")",
+            "INSERT INTO cycle_availability (cycle_id, day, pickup_from, return_by, confirmed, created_at) VALUES (?, ?, ?, ?, 1, " + Auth.now() + ")",
             id, day, pickupFrom, returnBy);
         syncAvailabilitySummary(id);
         Api.sendJson(ex, 200, availabilityRows(id));
@@ -247,22 +247,33 @@ public final class CycleHandlers {
     /** Keeps cycles.available_from/to as a summary of the availability days ('' when none). */
     static void syncAvailabilitySummary(long cycleId) {
         Db.execute(
-            "UPDATE cycles SET available_from = COALESCE((SELECT MIN(day) FROM cycle_availability WHERE cycle_id = ?), '')," +
-            " available_to = COALESCE((SELECT MAX(day) FROM cycle_availability WHERE cycle_id = ?), '') WHERE id = ?",
+            "UPDATE cycles SET available_from = COALESCE((SELECT MIN(day) FROM cycle_availability WHERE cycle_id = ? AND confirmed = 1), '')," +
+            " available_to = COALESCE((SELECT MAX(day) FROM cycle_availability WHERE cycle_id = ? AND confirmed = 1), '') WHERE id = ?",
             cycleId, cycleId, cycleId);
     }
 
     /** Availability rows for API output: upcoming days only, earliest first. */
     static List<Object> availabilityRows(long cycleId) {
+        return availabilityRows(cycleId, false);
+    }
+
+    /**
+     * onlyConfirmed hides leftover unconfirmed days from renter-facing output;
+     * the owner sees every day with its confirmed flag so they can re-save old ones.
+     */
+    static List<Object> availabilityRows(long cycleId, boolean onlyConfirmed) {
         String today = java.time.LocalDate.now().toString();
         List<Object> out = new ArrayList<>();
         for (Map<String, Object> a : Db.query(
                 "SELECT * FROM cycle_availability WHERE cycle_id = ? AND day >= ? ORDER BY day LIMIT 30", cycleId, today)) {
+            boolean confirmed = ((Number) a.get("confirmed")).intValue() == 1;
+            if (onlyConfirmed && !confirmed) continue;
             Map<String, Object> row = new HashMap<>();
             row.put("id", a.get("id"));
             row.put("day", a.get("day"));
             row.put("pickupFrom", a.get("pickup_from"));
             row.put("returnBy", a.get("return_by"));
+            row.put("confirmed", confirmed);
             out.add(row);
         }
         return out;
@@ -367,7 +378,7 @@ public final class CycleHandlers {
         out.put("location", c.get("location"));
         out.put("availableFrom", c.get("available_from"));
         out.put("availableTo", c.get("available_to"));
-        out.put("availability", availabilityRows(((Number) c.get("id")).longValue()));
+        out.put("availability", availabilityRows(((Number) c.get("id")).longValue(), !includeAll));
         out.put("status", c.get("status"));
         out.put("createdAt", c.get("created_at"));
 

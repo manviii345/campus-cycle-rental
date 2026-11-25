@@ -102,7 +102,7 @@ public final class BookingHandlers {
         // BR-04: the owner makes the cycle available on specific days, each with a
         // pickup/return time window. The rental must fit inside that day's window.
         Map<String, Object> window = Db.queryOne(
-            "SELECT * FROM cycle_availability WHERE cycle_id = ? AND day = ?", cycleId, date);
+            "SELECT * FROM cycle_availability WHERE cycle_id = ? AND day = ? AND confirmed = 1", cycleId, date);
         if (window == null) {
             throw new ApiException(409, "The owner has not made this cycle available on " + date);
         }
