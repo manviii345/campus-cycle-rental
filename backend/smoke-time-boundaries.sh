@@ -55,6 +55,16 @@ T=$(jq -r '.totalAmount // .total_amount // empty' /tmp/stb_body)
 # 8. non-quarter time rejected: 10:07
 [ "$(book 10:07 11:00)" = "400" ] && ok 'non-15-minute time 10:07 rejected 400' || bad "non-quarter not rejected: $(cat /tmp/stb_body)"
 
+# 8b. any duration books when fully inside the window (no one-hour cap):
+# 75 and 90 minutes both book and price proportionally
+[ "$(book 14:00 15:15)" = "201" ] && ok '75-minute rental books (no duration cap)' || bad "75-min: $(cat /tmp/stb_body)"
+T75=$(jq -r '.totalAmount // .total_amount // empty' /tmp/stb_body)
+[ "$T75" = "125" ] || [ "$T75" = "125.0" ] && ok '75-minute rental priced Rs 125 (1.25h x 100)' || bad "75-min price: $T75"
+[ "$(book 15:15 16:45)" = "201" ] && ok '90-minute rental books (no duration cap)' || bad "90-min: $(cat /tmp/stb_body)"
+T90=$(jq -r '.totalAmount // .total_amount // empty' /tmp/stb_body)
+[ "$T90" = "150" ] || [ "$T90" = "150.0" ] && ok '90-minute rental priced Rs 150 (1.5h x 100)' || bad "90-min price: $T90"
+[ "$(book 14:00 14:00)" = "400" ] && ok 'zero-length rental rejected 400' || bad "zero-length not rejected: $(cat /tmp/stb_body)"
+
 # 9. search: touching slot shows the cycle, overlapping slot hides it
 N=$(curl -s "$BASE/api/cycles?date=$DAY&timeFrom=11:00&timeTo=11:15" -H "Authorization: Bearer $TR" | jq --argjson c $CID '[.[] | select(.id==$c)] | length')
 [ "$N" = "1" ] && ok 'search finds cycle for free touching slot 11:00-11:15' || bad 'search touching slot'
