@@ -188,6 +188,9 @@ th, td { padding: 11px 6px; border-bottom: 1px solid var(--border); }
 .filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; align-items: end; }
 .photo-strip { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0; }
 .photo-strip img { width: 120px; height: 88px; object-fit: cover; border-radius: 10px; }
+/* On the cycle detail page the first photo leads large; extras stay as thumbs. */
+.photo-strip.photo-hero img:first-child { width: 100%; height: 280px; }
+.photo-strip.photo-hero img:first-child:last-child { margin-bottom: 4px; }
 .stars { color: #b78a1d; font-size: 15px; }
 .tabs { display: flex; gap: 8px; margin-bottom: 20px; }
 .tabs button { background: transparent; color: var(--text); border: 1px solid #cfcab9; }

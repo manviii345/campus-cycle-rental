@@ -52,7 +52,7 @@ export default function CycleDetail() {
       <p><Link to="/">← Back to browse</Link></p>
       <div className="card">
         <h2>{cycle.title} <span className={`badge ${cycle.status}`}>{cycle.status}</span></h2>
-        <div className="photo-strip">
+        <div className="photo-strip photo-hero">
           {cycle.photos.map((p) => <img key={p.id} src={p.url} alt="cycle" />)}
           {cycle.photos.length === 0 && <span className="muted">No photos uploaded</span>}
         </div>
