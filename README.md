@@ -66,6 +66,11 @@ cyclerental/
    ```
 
 Tables are created automatically on first run - no migration scripts needed.
+Databases from the pre-hourly version upgrade in place on first start: the old daily
+price is converted to an hourly starting rate (daily / 24), but such listings stay
+unconfirmed and accept no new bookings until the owner explicitly sets the hourly
+price (My Cycles shows an "unconfirmed" hint). No availability days are invented for
+them; the owner adds rentable days. Existing bookings are untouched.
 
 **Option B: zero-setup SQLite (handy for a quick demo)**
 
@@ -115,8 +120,9 @@ BASE=http://localhost:8080 bash smoke-test.sh
 Checks covering registration (incl. 10-digit phone validation), login, listings,
 per-day availability windows, photos, search filters (incl. single-day time search),
 hourly price calculation with 15-minute steps, booking flow, overlap prevention,
-payment, two-sided pickup/return, reviews, notifications, issue reports, and history
-retention. Expect `Passed: 75`.
+legacy-listing gating (a converted daily rate stays unconfirmed until the owner sets
+the hourly price), payment, two-sided pickup/return, reviews, notifications, issue
+reports, and history retention. Expect `Passed: 83`.
 The late-return fine test (SQLite only, it edits dates in the database file) is run with
 `BASE=http://localhost:8080 DB_FILE=/path/to/cyclerental.db ./smoke-late.sh` and expects `Passed: 5`.
 

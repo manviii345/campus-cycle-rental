@@ -101,6 +101,7 @@ public final class Db {
                 "description TEXT, " +
                 "price_per_day DECIMAL(10,2) NOT NULL, " +  // legacy: kept for old rows; new listings store hourly x 24
                 "price_per_hour DECIMAL(10,2), " +     // the rate renters actually pay (per hour)
+                "pricing_confirmed INT NOT NULL DEFAULT 0, " + // 1 only after the owner explicitly sets an hourly rate
                 "location VARCHAR(150), " +            // pickup area / locality
                 "available_from VARCHAR(10) NOT NULL, " +  // YYYY-MM-DD summary of availability days ('' when none)
                 "available_to VARCHAR(10) NOT NULL, " +
@@ -192,42 +193,25 @@ public final class Db {
                     // column already exists - nothing to do
                 }
             }
-            // Listings created before hourly pricing get their hourly rate from the old daily rate.
+            // pricing_confirmed marks listings whose owner explicitly set an hourly rate.
+            // Every pre-existing row starts unconfirmed: a converted rate is only a suggestion
+            // shown to the owner, and rows from a database already migrated by the hourly version
+            // cannot be told apart from owner-set rates, so no listing is auto-confirmed here.
+            try {
+                st.execute("ALTER TABLE cycles ADD COLUMN pricing_confirmed INT NOT NULL DEFAULT 0");
+            } catch (SQLException ignored) {
+                // column already exists - nothing to do
+            }
+            // Listings created before hourly pricing get a converted rate as a starting point,
+            // but stay unconfirmed: the owner must set the hourly rate before new bookings.
             st.execute("UPDATE cycles SET price_per_hour = ROUND(price_per_day / 24.0, 2) WHERE price_per_hour IS NULL");
         } catch (SQLException e) {
             throw new ExceptionInInitializerError("Could not initialise the database: " + e.getMessage()
                 + "\nCheck DB_URL / DB_USER / DB_PASSWORD (see README). Current DB_URL=" + URL);
         }
-        backfillLegacyAvailability();
-    }
-
-    /**
-     * Listings created before per-day availability existed had one continuous
-     * available_from..available_to window. Give each such listing matching
-     * availability days (09:00-18:00, capped at 90 days out) so old listings
-     * stay bookable. Runs only for listings with no availability rows yet.
-     */
-    private static void backfillLegacyAvailability() {
-        java.time.LocalDate today = java.time.LocalDate.now();
-        java.time.LocalDate maxDay = today.plusDays(90);
-        for (Map<String, Object> c : query("SELECT id, available_from, available_to FROM cycles")) {
-            Object idObj = c.get("id");
-            long cycleId = ((Number) idObj).longValue();
-            long existing = ((Number) queryOne(
-                "SELECT COUNT(*) AS n FROM cycle_availability WHERE cycle_id = ?", cycleId).get("n")).longValue();
-            if (existing > 0) continue;
-            String from = (String) c.get("available_from");
-            String to = (String) c.get("available_to");
-            if (from == null || to == null || !from.matches("\\d{4}-\\d{2}-\\d{2}") || !to.matches("\\d{4}-\\d{2}-\\d{2}")) continue;
-            java.time.LocalDate start = java.time.LocalDate.parse(from);
-            java.time.LocalDate end = java.time.LocalDate.parse(to);
-            if (start.isBefore(today)) start = today;
-            if (end.isAfter(maxDay)) end = maxDay;
-            for (java.time.LocalDate d = start; !d.isAfter(end); d = d.plusDays(1)) {
-                execute("INSERT INTO cycle_availability (cycle_id, day, pickup_from, return_by, created_at)" +
-                    " VALUES (?, ?, '09:00', '18:00', " + Auth.now() + ")", cycleId, d.toString());
-            }
-        }
+        // NOTE: listings from before per-day availability get NO availability days here.
+        // Their available_from/to summary stays as historical data, but the owner must add
+        // availability days and set an hourly rate before the listing accepts new bookings.
     }
 
     /** Runs a SELECT and returns each row as a map of column name to value. */

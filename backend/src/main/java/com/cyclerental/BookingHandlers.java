@@ -89,6 +89,10 @@ public final class BookingHandlers {
 
         Map<String, Object> cycle = Db.queryOne("SELECT * FROM cycles WHERE id = ?", cycleId);
         if (cycle == null || "REMOVED".equals(cycle.get("status"))) throw new ApiException(404, "Cycle not found");
+        Object confirmed = cycle.get("pricing_confirmed");
+        if (confirmed == null || ((Number) confirmed).intValue() != 1) {
+            throw new ApiException(409, "This listing is not bookable yet: the owner still needs to set its hourly price and availability");
+        }
 
         long renterId = Auth.userId(user);
         long ownerId = ((Number) cycle.get("owner_id")).longValue();

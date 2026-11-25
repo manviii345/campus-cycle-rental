@@ -29,18 +29,21 @@ public final class CycleHandlers {
         Map<String, Object> body = Api.bodyJson(ex);
 
         String title = Json.str(body, "title");
+        boolean explicitHourly = body.get("pricePerHour") instanceof Number;
         double pricePerHour = hourlyRate(body);
         if (pricePerHour <= 0) throw new ApiException(400, "Price per hour must be greater than zero");
 
         // available_from/to are kept as a summary of the availability days (see syncAvailabilitySummary).
+        // An explicit hourly rate confirms pricing; a converted legacy daily rate stays unconfirmed.
         long id = Db.execute(
             "INSERT INTO cycles (owner_id, title, brand, model, cycle_type, condition_note, description," +
-            " price_per_day, price_per_hour, location, available_from, available_to, status, created_at)" +
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', 'AVAILABLE', " + Auth.now() + ")",
+            " price_per_day, price_per_hour, pricing_confirmed, location, available_from, available_to, status, created_at)" +
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', 'AVAILABLE', " + Auth.now() + ")",
             Auth.userId(user), title,
             Json.strOrNull(body, "brand"), Json.strOrNull(body, "model"),
             Json.strOrNull(body, "cycleType"), Json.strOrNull(body, "condition"),
             Json.strOrNull(body, "description"), Math.round(pricePerHour * 24.0 * 100.0) / 100.0, pricePerHour,
+            explicitHourly ? 1 : 0,
             Json.strOrNull(body, "location"));
 
         Api.sendJson(ex, 201, getCycle(id));
@@ -80,7 +83,8 @@ public final class CycleHandlers {
         Map<String, String> p = Api.queryParams(ex);
         StringBuilder sql = new StringBuilder(
             "SELECT c.*, u.name AS owner_name FROM cycles c JOIN users u ON u.id = c.owner_id" +
-            " WHERE c.status = 'AVAILABLE'");
+            // pricing_confirmed: a listing accepts bookings only after the owner explicitly sets its hourly rate
+            " WHERE c.status = 'AVAILABLE' AND c.pricing_confirmed = 1");
         List<Object> params = new ArrayList<>();
 
         if (p.containsKey("query") && !p.get("query").isEmpty()) {
@@ -161,9 +165,12 @@ public final class CycleHandlers {
             throw new ApiException(400, "Status must be AVAILABLE, PAUSED or UNAVAILABLE");
         }
         Double hourly = null;
+        boolean confirmsPricing = false;
         if (body.get("pricePerHour") instanceof Number || body.get("pricePerDay") instanceof Number) {
             hourly = hourlyRate(body);
             if (hourly <= 0) throw new ApiException(400, "Price per hour must be greater than zero");
+            // Only an explicit hourly rate counts as the owner confirming the price.
+            confirmsPricing = body.get("pricePerHour") instanceof Number;
         }
         Double derivedDaily = hourly != null ? Math.round(hourly * 24.0 * 100.0) / 100.0 : null;
 
@@ -172,12 +179,14 @@ public final class CycleHandlers {
             " cycle_type = COALESCE(?, cycle_type), condition_note = COALESCE(?, condition_note)," +
             " description = COALESCE(?, description), price_per_day = COALESCE(?, price_per_day)," +
             " price_per_hour = COALESCE(?, price_per_hour)," +
+            " pricing_confirmed = CASE WHEN ? = 1 THEN 1 ELSE pricing_confirmed END," +
             " location = COALESCE(?, location), status = COALESCE(?, status)" +
             " WHERE id = ?",
             Json.strOrNull(body, "title"), Json.strOrNull(body, "brand"), Json.strOrNull(body, "model"),
             Json.strOrNull(body, "cycleType"), Json.strOrNull(body, "condition"),
-            Json.strOrNull(body, "description"), derivedDaily, hourly, Json.strOrNull(body, "location"),
-            status, id);
+            Json.strOrNull(body, "description"), derivedDaily, hourly,
+            confirmsPricing ? 1 : 0,
+            Json.strOrNull(body, "location"), status, id);
 
         Api.sendJson(ex, 200, getCycle(id));
     }
@@ -353,6 +362,8 @@ public final class CycleHandlers {
         Object hourly = c.get("price_per_hour");
         out.put("pricePerHour", hourly != null ? hourly
             : Math.round(((Number) c.get("price_per_day")).doubleValue() / 24.0 * 100.0) / 100.0);
+        Object confirmed = c.get("pricing_confirmed");
+        out.put("pricingConfirmed", confirmed != null && ((Number) confirmed).intValue() == 1);
         out.put("location", c.get("location"));
         out.put("availableFrom", c.get("available_from"));
         out.put("availableTo", c.get("available_to"));

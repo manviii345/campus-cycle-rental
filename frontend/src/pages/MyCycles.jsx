@@ -139,8 +139,14 @@ export default function MyCycles() {
       {cycles.map((c) => (
         <div className="card" key={c.id}>
           <h3>{c.title} <span className={`badge ${c.status}`}>{c.status}</span></h3>
+          {!c.pricingConfirmed && (
+            <p className="warning">
+              Not bookable yet: set this cycle's hourly price (Edit below) and add rentable days before renters can book it.
+              The current rate shown is only a starting point converted from the old daily price.
+            </p>
+          )}
           <p className="muted">
-            {formatMoney(c.pricePerHour)}/hour - {c.location || 'no area set'}
+            {formatMoney(c.pricePerHour)}/hour{c.pricingConfirmed ? '' : ' (unconfirmed)'} - {c.location || 'no area set'}
           </p>
           <div className="photo-strip">
             {c.photos.map((p) => (

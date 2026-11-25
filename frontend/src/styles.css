@@ -160,6 +160,11 @@ button:disabled { background: #b9bdb0; border-color: #b9bdb0; cursor: default; }
   border: 1px solid #cfd8c3; border-radius: 12px;
   padding: 12px 14px; margin: 14px 0; font-size: 14px;
 }
+.warning {
+  background: #fdf3dc; color: #8a6d1c;
+  border: 1px solid #ecd9a4; border-radius: 12px;
+  padding: 12px 14px; margin: 14px 0; font-size: 14px;
+}
 .fee {
   background: var(--peach); color: var(--peach-ink);
   border: 1px solid #ecd0b9; border-radius: 12px;

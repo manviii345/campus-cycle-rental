@@ -118,6 +118,33 @@ R=$(curl -s "$BASE/api/cycles?date=2026-12-10&timeFrom=06:00&timeTo=08:00" -H "A
 R=$(curl -s "$BASE/api/cycles?date=2026-12-10&timeFrom=10:10&timeTo=12:00" -H "Authorization: Bearer $TOKEN_B")
 [ "$(jqv "$R" .error)" = "Times must be in 15-minute steps (e.g. 09:00, 09:15, 09:30, 09:45)" ]; check "non-quarter-hour search time rejected" $?
 
+# 7b. Legacy-priced listings: a converted daily rate stays unconfirmed until the owner sets the hourly price
+R=$(curl -s -X POST "$BASE/api/cycles" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' \
+  -d '{"title":"Old Daily Cycle","pricePerDay":480,"location":"Hostel J"}')
+LEGACY_ID=$(jqv "$R" .id)
+[ "$(jqv "$R" .pricePerHour)" = "20" ]; check "legacy daily price converts to hourly (480/24 = 20)" $?
+[ "$(jqv "$R" .pricingConfirmed)" = "false" ]; check "converted listing starts unconfirmed" $?
+R=$(curl -s -X POST "$BASE/api/cycles/$LEGACY_ID/availability" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' \
+  -d '{"day":"2026-12-10","pickupFrom":"09:00","returnBy":"18:00"}')
+[ "$(jqv "$R" '.[0].day')" = "2026-12-10" ]; check "owner can add a day to an unconfirmed listing" $?
+R=$(curl -s "$BASE/api/cycles?date=2026-12-10&timeFrom=09:00&timeTo=10:00" -H "Authorization: Bearer $TOKEN_B")
+[ "$(jqv "$R" '[.[] | select(.id == '$LEGACY_ID')] | length')" = "0" ]; check "unconfirmed listing excluded from search" $?
+R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
+  -d "{\"cycleId\":$LEGACY_ID,\"date\":\"2026-12-10\",\"startTime\":\"09:00\",\"endTime\":\"10:00\"}")
+[ "$(jqv "$R" .error)" = "This listing is not bookable yet: the owner still needs to set its hourly price and availability" ]; check "unconfirmed listing cannot be booked (409)" $?
+R=$(curl -s -X PUT "$BASE/api/cycles/$LEGACY_ID" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' \
+  -d '{"title":"Old Daily Cycle Renamed"}')
+[ "$(jqv "$R" .pricingConfirmed)" = "false" ]; check "unrelated edit does not confirm pricing" $?
+R=$(curl -s -X PUT "$BASE/api/cycles/$LEGACY_ID" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' \
+  -d '{"pricePerHour":25}')
+[ "$(jqv "$R" .pricingConfirmed)" = "true" ] && [ "$(jqv "$R" .pricePerHour)" = "25" ]; check "owner setting the hourly price confirms the listing" $?
+R=$(curl -s "$BASE/api/cycles?date=2026-12-10&timeFrom=09:00&timeTo=10:00" -H "Authorization: Bearer $TOKEN_B")
+[ "$(jqv "$R" '[.[] | select(.id == '$LEGACY_ID')] | length')" = "1" ]; check "confirmed listing appears in search" $?
+R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
+  -d "{\"cycleId\":$LEGACY_ID,\"date\":\"2026-12-10\",\"startTime\":\"09:00\",\"endTime\":\"10:15\"}")
+BKLEG=$(jqv "$R" .id); [ "$(jqv "$R" .totalAmount)" = "31.25" ]; check "confirmed listing books at the new rate (1.25h x 25 = 31.25)" $?
+curl -s -X POST "$BASE/api/bookings/$BKLEG/cancel" -H "Authorization: Bearer $TOKEN_B" > /dev/null
+
 # 8. Renter requests a booking: 2026-12-10 10:00-12:30 = 2.5 hours x Rs. 100 = Rs. 250
 R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
   -d "{\"cycleId\":$CYCLE_ID,\"date\":\"2026-12-10\",\"startTime\":\"10:00\",\"endTime\":\"12:30\"}")

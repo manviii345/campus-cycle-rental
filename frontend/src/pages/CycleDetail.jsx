@@ -117,7 +117,11 @@ export default function CycleDetail() {
       {!me && <div className="notice">Please <Link to="/login">log in</Link> to request this cycle.</div>}
       {isOwn && <div className="notice">This is your own listing - manage it under <Link to="/my-cycles">My Cycles</Link>.</div>}
 
-      {me && !isOwn && cycle.status === 'AVAILABLE' && (
+      {me && !isOwn && cycle.status === 'AVAILABLE' && !cycle.pricingConfirmed && (
+        <div className="notice">The owner has not set this cycle's hourly price and availability yet, so it cannot be booked right now.</div>
+      )}
+
+      {me && !isOwn && cycle.status === 'AVAILABLE' && cycle.pricingConfirmed && (
         <div className="card">
           <h3>Request this cycle</h3>
           {message && <div className="notice">{message}</div>}
