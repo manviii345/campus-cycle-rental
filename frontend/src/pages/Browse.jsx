@@ -3,11 +3,9 @@ import { Link } from 'react-router-dom'
 import { request, formatMoney } from '../api.js'
 import Photo from '../Photo.jsx'
 
-const CYCLE_TYPES = ['', 'City', 'Road', 'Mountain', 'Hybrid', 'Electric', 'Kids']
-
-// FR-06 browse + FR-07 search filters.
+// FR-06 browse + FR-07 search by day and time interval only.
 export default function Browse() {
-  const [filters, setFilters] = useState({ query: '', type: '', location: '', minPrice: '', maxPrice: '', date: '', timeFrom: '', timeTo: '' })
+  const [filters, setFilters] = useState({ date: '', timeFrom: '', timeTo: '' })
   const [cycles, setCycles] = useState([])
   const [error, setError] = useState('')
 
@@ -35,15 +33,6 @@ export default function Browse() {
       <p className="lede">Students list their own cycles. Borrow one for a few hours and hand it back when you are done.</p>
       <div className="card">
         <div className="filters">
-          <div><label>Search</label><input placeholder="brand, model, keyword" value={filters.query} onChange={set('query')} /></div>
-          <div><label>Type</label>
-            <select value={filters.type} onChange={set('type')}>
-              {CYCLE_TYPES.map((t) => <option key={t} value={t}>{t || 'Any'}</option>)}
-            </select>
-          </div>
-          <div><label>Pickup location</label><input placeholder="campus pickup point" value={filters.location} onChange={set('location')} /></div>
-          <div><label>Min price/hour</label><input type="number" min="0" value={filters.minPrice} onChange={set('minPrice')} /></div>
-          <div><label>Max price/hour</label><input type="number" min="0" value={filters.maxPrice} onChange={set('maxPrice')} /></div>
           <div><label>Day</label><input type="date" value={filters.date} onChange={set('date')} /></div>
           <div><label>Pickup time</label><input type="time" step="900" value={filters.timeFrom} onChange={set('timeFrom')} disabled={!filters.date} /></div>
           <div><label>Return time</label><input type="time" step="900" value={filters.timeTo} onChange={set('timeTo')} disabled={!filters.date} /></div>
@@ -52,7 +41,7 @@ export default function Browse() {
       </div>
 
       {error && <div className="error">{error}</div>}
-      {cycles.length === 0 && !error && <p className="muted">No cycles match these filters yet.</p>}
+      {cycles.length === 0 && !error && <p className="muted">No cycles available for this day and time yet.</p>}
 
       <div className="grid">
         {cycles.map((c) => (
