@@ -57,9 +57,9 @@ PHOTO_URL=$(jqv "$R" .url); [ -n "$PHOTO_URL" ] && [ "$PHOTO_URL" != "null" ]; c
 C=$(curl -s -o /dev/null -w '%{http_code}' "$BASE$PHOTO_URL"); [ "$C" = "200" ]; check "photo is served" $?
 
 # 7. Search finds it with filters
-R=$(curl -s "$BASE/api/cycles?query=hero&maxPrice=200&from=2026-12-10&to=2026-12-12")
+R=$(curl -s "$BASE/api/cycles?query=hero&maxPrice=200&from=2026-12-10&to=2026-12-12" -H "Authorization: Bearer $TOKEN_B")
 [ "$(jqv "$R" '.[0].id')" = "$CYCLE_ID" ]; check "search with filters" $?
-R=$(curl -s "$BASE/api/cycles?maxPrice=100"); [ "$(jqv "$R" 'length')" = "0" ]; check "price filter excludes" $?
+R=$(curl -s "$BASE/api/cycles?maxPrice=100" -H "Authorization: Bearer $TOKEN_B"); [ "$(jqv "$R" 'length')" = "0" ]; check "price filter excludes" $?
 
 # 8. Renter requests a booking (3 days -> Rs. 450)
 R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
@@ -171,7 +171,7 @@ R=$(curl -s -X POST "$BASE/api/bookings/$BOOKING_ID/reviews" -H "Authorization: 
 [ "$(jqv "$R" '.reviews | length')" = "1" ]; check "renter reviews owner" $?
 curl -s -X POST "$BASE/api/bookings/$BOOKING_ID/reviews" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' \
   -d '{"rating":4,"comment":"Returned on time"}' > /dev/null
-R=$(curl -s "$BASE/api/users/$(curl -s "$BASE/api/cycles/$CYCLE_ID" | jq -r .ownerId)")
+R=$(curl -s "$BASE/api/users/$(curl -s "$BASE/api/cycles/$CYCLE_ID" -H "Authorization: Bearer $TOKEN_A" | jq -r .ownerId)")
 [ "$(jqv "$R" .avgRating)" = "5" ]; check "owner public rating" $?
 
 # 17. Notifications delivered (FR-21)
@@ -183,8 +183,49 @@ R=$(curl -s -X POST "$BASE/api/bookings/$BOOKING_ID/report" -H "Authorization: B
   -d '{"description":"Brake was loose"}')
 [ "$(jqv "$R" .status)" = "OPEN" ]; check "issue report" $?
 
-# 19. Auth required
+# 19. Auth required: listings are private to logged-in students (search, detail, own lists)
 C=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/cycles/mine"); [ "$C" = "401" ]; check "unauthenticated request rejected" $?
+C=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/cycles"); [ "$C" = "401" ]; check "cycle search hidden when logged out" $?
+C=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/cycles/$CYCLE_ID"); [ "$C" = "401" ]; check "cycle detail hidden when logged out" $?
+
+# 19b. Rental times: booking stores pickup/return times and they show on the booking
+R=$(curl -s -X POST "$BASE/api/cycles" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' \
+  -d '{"title":"Timed Cycle","pricePerDay":100,"location":"Library","availableFrom":"2027-01-01","availableTo":"2027-01-31"}')
+CYCLE_T=$(jqv "$R" .id)
+R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
+  -d '{"cycleId":'$CYCLE_T',"startDate":"2027-01-10","endDate":"2027-01-12","startTime":"08:30","endTime":"20:15"}')
+BKT=$(jqv "$R" .id)
+R=$(curl -s "$BASE/api/bookings/$BKT" -H "Authorization: Bearer $TOKEN_B")
+[ "$(jqv "$R" .startTime)" = "08:30" ] && [ "$(jqv "$R" .endTime)" = "20:15" ]; check "booking stores pickup and return times" $?
+# Same-day booking must end after it starts
+R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
+  -d '{"cycleId":'$CYCLE_T',"startDate":"2027-01-15","endDate":"2027-01-15","startTime":"18:00","endTime":"09:00"}')
+[ "$(jqv "$R" .error)" = "The return time must be after the pickup time" ]; check "same-day booking with end before start rejected" $?
+# A same-day booking with valid times is allowed
+R=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
+  -d '{"cycleId":'$CYCLE_T',"startDate":"2027-01-16","endDate":"2027-01-16","startTime":"09:00","endTime":"11:00"}')
+BKSD=$(jqv "$R" .id)
+[ "$BKSD" -gt 0 ] 2>/dev/null; check "same-day booking with valid times allowed" $?
+# Search by timings: a confirmed booking overlapping the requested slot hides the cycle
+curl -s -X POST "$BASE/api/bookings/$BKT/reject" -H "Authorization: Bearer $TOKEN_A" > /dev/null
+curl -s -X POST "$BASE/api/bookings/$BKSD/accept" -H "Authorization: Bearer $TOKEN_A" > /dev/null
+R=$(curl -s "$BASE/api/cycles?from=2027-01-16&to=2027-01-16&timeFrom=10:00&timeTo=12:00" -H "Authorization: Bearer $TOKEN_B")
+[ "$(jqv "$R" '[.[] | select(.id == '$CYCLE_T')] | length')" = "0" ]; check "timing search excludes an overlapping booking" $?
+R=$(curl -s "$BASE/api/cycles?from=2027-01-16&to=2027-01-16&timeFrom=12:00&timeTo=14:00" -H "Authorization: Bearer $TOKEN_B")
+[ "$(jqv "$R" '[.[] | select(.id == '$CYCLE_T')] | length')" = "1" ]; check "timing search finds a free slot" $?
+
+# 19c. The cycle owner must mark the cycle returned: renter initiates, owner completes
+BKT2=$(curl -s -X POST "$BASE/api/bookings" -H "Authorization: Bearer $TOKEN_B" -H 'Content-Type: application/json' \
+  -d '{"cycleId":'$CYCLE_T',"startDate":"2027-01-20","endDate":"2027-01-21"}' | jq -r .id)
+curl -s -X POST "$BASE/api/bookings/$BKT2/accept" -H "Authorization: Bearer $TOKEN_A" > /dev/null
+curl -s -X POST "$BASE/api/bookings/$BKT2/pickup" -H "Authorization: Bearer $TOKEN_A" > /dev/null
+curl -s -X POST "$BASE/api/bookings/$BKT2/pickup" -H "Authorization: Bearer $TOKEN_B" > /dev/null
+R=$(curl -s -X POST "$BASE/api/bookings/$BKT2/return" -H "Authorization: Bearer $TOKEN_A")
+[ "$(jqv "$R" .error)" = "The renter has not initiated the return yet" ]; check "owner cannot mark returned before the renter initiates" $?
+R=$(curl -s -X POST "$BASE/api/bookings/$BKT2/return" -H "Authorization: Bearer $TOKEN_B")
+[ "$(jqv "$R" .status)" = "ACTIVE" ] && [ "$(jqv "$R" .returnRenterConfirmedAt)" != "null" ]; check "renter initiates the return (still active)" $?
+R=$(curl -s -X POST "$BASE/api/bookings/$BKT2/return" -H "Authorization: Bearer $TOKEN_A")
+[ "$(jqv "$R" .status)" = "COMPLETED" ]; check "owner marks returned, rental completes" $?
 
 # 20. Owner history includes the completed booking even after listing removal (BR-10)
 R=$(curl -s -X DELETE "$BASE/api/cycles/$CYCLE2" -H "Authorization: Bearer $TOKEN_A"); [ "$(jqv "$R" .ok)" = "true" ]; check "listing removal" $?

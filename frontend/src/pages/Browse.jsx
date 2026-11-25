@@ -6,7 +6,7 @@ const CYCLE_TYPES = ['', 'City', 'Road', 'Mountain', 'Hybrid', 'Electric', 'Kids
 
 // FR-06 browse + FR-07 search filters.
 export default function Browse() {
-  const [filters, setFilters] = useState({ query: '', type: '', location: '', minPrice: '', maxPrice: '', from: '', to: '' })
+  const [filters, setFilters] = useState({ query: '', type: '', location: '', minPrice: '', maxPrice: '', from: '', to: '', timeFrom: '', timeTo: '' })
   const [cycles, setCycles] = useState([])
   const [error, setError] = useState('')
 
@@ -45,6 +45,8 @@ export default function Browse() {
           <div><label>Max price/day</label><input type="number" min="0" value={filters.maxPrice} onChange={set('maxPrice')} /></div>
           <div><label>From</label><input type="date" value={filters.from} onChange={set('from')} /></div>
           <div><label>To</label><input type="date" value={filters.to} onChange={set('to')} /></div>
+          <div><label>Pickup time</label><input type="time" value={filters.timeFrom} onChange={set('timeFrom')} disabled={!filters.from || !filters.to} /></div>
+          <div><label>Return time</label><input type="time" value={filters.timeTo} onChange={set('timeTo')} disabled={!filters.from || !filters.to} /></div>
           <div><button onClick={() => load()}>Search</button></div>
         </div>
       </div>

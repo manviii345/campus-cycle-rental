@@ -65,6 +65,7 @@ public final class CycleHandlers {
      * covers the requested period and that have no overlapping confirmed booking.
      */
     public static void search(HttpExchange ex) throws Exception {
+        Auth.requireUser(ex.getRequestHeaders().getFirst("Authorization")); // listings are visible to logged-in students only
         Map<String, String> p = Api.queryParams(ex);
         StringBuilder sql = new StringBuilder(
             "SELECT c.*, u.name AS owner_name FROM cycles c JOIN users u ON u.id = c.owner_id" +
@@ -95,13 +96,17 @@ public final class CycleHandlers {
         String from = p.get("from");
         String to = p.get("to");
         if (from != null && !from.isEmpty() && to != null && !to.isEmpty()) {
+            // Optional start/end times (HH:MM) refine the search to an exact time window.
+            String timeFrom = BookingHandlers.validTimeOr(p.get("timeFrom"), BookingHandlers.DEFAULT_START_TIME);
+            String timeTo = BookingHandlers.validTimeOr(p.get("timeTo"), BookingHandlers.DEFAULT_END_TIME);
             // Availability window must cover the whole rental period (BR-04)...
             sql.append(" AND c.available_from <= ? AND c.available_to >= ?");
             params.add(from); params.add(to);
-            // ...and there must be no overlapping confirmed booking (BR-05 / FR-13).
+            // ...and no confirmed booking may overlap the requested date+time window (BR-05 / FR-13).
             sql.append(" AND NOT EXISTS (SELECT 1 FROM bookings b WHERE b.cycle_id = c.id" +
-                       " AND b.status IN ('ACCEPTED','ACTIVE') AND b.start_date <= ? AND b.end_date >= ?)");
-            params.add(to); params.add(from);
+                       " AND b.status IN ('ACCEPTED','ACTIVE')" +
+                       " AND (b.start_date || ' ' || b.start_time) <= ? AND (b.end_date || ' ' || b.end_time) >= ?)");
+            params.add(to + " " + timeTo); params.add(from + " " + timeFrom);
         }
         sql.append(" ORDER BY c.id DESC");
 
@@ -114,6 +119,7 @@ public final class CycleHandlers {
 
     /** GET /api/cycles/{id} - full listing details (FR-08). */
     public static void getOne(HttpExchange ex, long id) throws Exception {
+        Auth.requireUser(ex.getRequestHeaders().getFirst("Authorization")); // logged-in students only
         Map<String, Object> cycle = Db.queryOne(
             "SELECT c.*, u.name AS owner_name FROM cycles c JOIN users u ON u.id = c.owner_id WHERE c.id = ?", id);
         if (cycle == null || "REMOVED".equals(cycle.get("status"))) {

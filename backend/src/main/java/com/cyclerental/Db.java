@@ -118,6 +118,8 @@ public final class Db {
                 "renter_id BIGINT NOT NULL REFERENCES users(id), " +
                 "start_date VARCHAR(10) NOT NULL, " +
                 "end_date VARCHAR(10) NOT NULL, " +
+                "start_time VARCHAR(5), " +   // HH:MM pickup time (NULL on pre-time bookings)
+                "end_time VARCHAR(5), " +     // HH:MM return time
                 "total_amount DECIMAL(10,2) NOT NULL, " +
                 "status VARCHAR(20) NOT NULL DEFAULT 'PENDING', " +    // PENDING, ACCEPTED, REJECTED, CANCELLED, ACTIVE, COMPLETED
                 "pickup_owner_at " + now + ", " +
@@ -166,6 +168,16 @@ public final class Db {
         try (Connection c = getConnection(); Statement st = c.createStatement()) {
             for (String sql : statements) {
                 st.execute(sql);
+            }
+            // Migrations for databases created before pickup/return times existed.
+            for (String alter : new String[] {
+                    "ALTER TABLE bookings ADD COLUMN start_time VARCHAR(5)",
+                    "ALTER TABLE bookings ADD COLUMN end_time VARCHAR(5)"}) {
+                try {
+                    st.execute(alter);
+                } catch (SQLException ignored) {
+                    // column already exists - nothing to do
+                }
             }
         } catch (SQLException e) {
             throw new ExceptionInInitializerError("Could not initialise the database: " + e.getMessage()

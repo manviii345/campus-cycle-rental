@@ -66,10 +66,10 @@ export default function App() {
       </nav>
 
       <Routes>
-        <Route path="/" element={<Browse />} />
+        <Route path="/" element={<Protected><Browse /></Protected>} />
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
-        <Route path="/cycles/:id" element={<CycleDetail />} />
+        <Route path="/cycles/:id" element={<Protected><CycleDetail /></Protected>} />
         <Route path="/my-cycles" element={<Protected><MyCycles /></Protected>} />
         <Route path="/bookings" element={<Protected><Bookings /></Protected>} />
         <Route path="/notifications" element={<Protected><Notifications /></Protected>} />

@@ -28,6 +28,19 @@ public final class BookingHandlers {
      * The total price is calculated here and returned so the renter sees the
      * amount before committing (FR-16, BR-09).
      */
+    /** Default pickup/return times when the renter does not choose any. */
+    static final String DEFAULT_START_TIME = "09:00";
+    static final String DEFAULT_END_TIME = "18:00";
+
+    /** Returns the given HH:MM time if valid, otherwise the fallback. */
+    static String validTimeOr(String value, String fallback) {
+        if (value == null || value.isEmpty()) return fallback;
+        if (!value.matches("^([01][0-9]|2[0-3]):[0-5][0-9]$")) {
+            throw new ApiException(400, "Time must be in HH:MM format (e.g. 09:30)");
+        }
+        return value;
+    }
+
     public static void create(HttpExchange ex) throws Exception {
         Map<String, Object> user = Auth.requireUser(ex.getRequestHeaders().getFirst("Authorization"));
         Map<String, Object> body = Api.bodyJson(ex);
@@ -35,6 +48,11 @@ public final class BookingHandlers {
         String start = Json.str(body, "startDate");
         String end = Json.str(body, "endDate");
         CycleHandlers.validateDates(start, end);
+        String startTime = validTimeOr(Json.strOrNull(body, "startTime"), DEFAULT_START_TIME);
+        String endTime = validTimeOr(Json.strOrNull(body, "endTime"), DEFAULT_END_TIME);
+        if ((start + " " + startTime).compareTo(end + " " + endTime) >= 0) {
+            throw new ApiException(400, "The return time must be after the pickup time");
+        }
 
         Map<String, Object> cycle = Db.queryOne("SELECT * FROM cycles WHERE id = ?", cycleId);
         if (cycle == null || "REMOVED".equals(cycle.get("status"))) throw new ApiException(404, "Cycle not found");
@@ -50,8 +68,8 @@ public final class BookingHandlers {
             throw new ApiException(409, "The cycle is only available from "
                 + cycle.get("available_from") + " to " + cycle.get("available_to"));
         }
-        // FR-13 / BR-05: no overlap with confirmed bookings.
-        if (hasOverlap(cycleId, start, end)) {
+        // FR-13 / BR-05: no overlap with confirmed bookings (compares date + time).
+        if (hasOverlap(cycleId, start, startTime, end, endTime)) {
             throw new ApiException(409, "This cycle is already booked for (part of) that period");
         }
 
@@ -60,12 +78,12 @@ public final class BookingHandlers {
         double total = Math.round(days * pricePerDay * 100.0) / 100.0;
 
         long id = Db.execute(
-            "INSERT INTO bookings (cycle_id, renter_id, start_date, end_date, total_amount, status, created_at, updated_at)" +
-            " VALUES (?, ?, ?, ?, ?, 'PENDING', " + Auth.now() + ", " + Auth.now() + ")",
-            cycleId, renterId, start, end, total);
+            "INSERT INTO bookings (cycle_id, renter_id, start_date, end_date, start_time, end_time, total_amount, status, created_at, updated_at)" +
+            " VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', " + Auth.now() + ", " + Auth.now() + ")",
+            cycleId, renterId, start, end, startTime, endTime, total);
 
         notifyUser(ownerId, "BOOKING_REQUEST",
-            user.get("name") + " requested \"" + cycle.get("title") + "\" from " + start + " to " + end);
+            user.get("name") + " requested \"" + cycle.get("title") + "\" from " + start + " " + startTime + " to " + end + " " + endTime);
 
         Api.sendJson(ex, 201, getBooking(id, user));
     }
@@ -117,7 +135,8 @@ public final class BookingHandlers {
             mustBeOwner(booking, user);
             requireStatus(booking, "PENDING");
             if (hasOverlap(((Number) booking.get("cycle_id")).longValue(),
-                    (String) booking.get("start_date"), (String) booking.get("end_date"))) {
+                    (String) booking.get("start_date"), (String) booking.get("start_time"),
+                    (String) booking.get("end_date"), (String) booking.get("end_time"))) {
                 throw new ApiException(409, "Another confirmed booking already overlaps this period");
             }
             setStatus(id, "ACCEPTED");
@@ -214,8 +233,10 @@ public final class BookingHandlers {
 
     /**
      * POST /api/bookings/{id}/return - FR-20 return management.
-     * The renter initiates the return; the owner then confirms the cycle came back,
-     * which completes the rental and opens reviews.
+     * The renter initiates the return; the owner then marks the cycle returned,
+     * which completes the rental and opens reviews (user-confirmed rule: the cycle
+     * owner must be the one to mark it returned). The late fine stops when the
+     * renter initiates, so the owner's confirmation delay never adds to it.
      */
     public static void confirmReturn(HttpExchange ex, long id) throws Exception {
         Map<String, Object> user = Auth.requireUser(ex.getRequestHeaders().getFirst("Authorization"));
@@ -232,11 +253,11 @@ public final class BookingHandlers {
 
         Map<String, Object> fresh = loadForParty(id, user);
         if (fresh.get("return_owner_at") != null) {
-            // owner confirmation completes the rental (renter already initiated)
+            // owner marking the cycle returned completes the rental (renter already initiated)
             setStatus(id, "COMPLETED");
         }
         notifyOtherParty(fresh, user, owner ? "RETURN_CONFIRMED" : "RETURN_INITIATED",
-            user.get("name") + (owner ? " confirmed the return of \"" : " initiated the return of \"") + booking.get("cycle_title") + "\"");
+            user.get("name") + (owner ? " marked \"" : " initiated the return of \"") + booking.get("cycle_title") + "\"" + (owner ? " as returned" : ""));
         Api.sendJson(ex, 200, getBooking(id, user));
     }
 
@@ -288,11 +309,18 @@ public final class BookingHandlers {
 
     // ---------- helpers ----------
 
-    /** True when the cycle has an ACCEPTED or ACTIVE booking overlapping [start, end]. */
-    static boolean hasOverlap(long cycleId, String start, String end) {
+    /**
+     * True when the cycle has an ACCEPTED or ACTIVE booking overlapping the
+     * requested window. Windows are compared as "YYYY-MM-DD HH:MM" strings,
+     * which sort chronologically. Bookings made before times existed have
+     * NULL times and fall back to full-day comparison.
+     */
+    static boolean hasOverlap(long cycleId, String start, String startTime, String end, String endTime) {
         Map<String, Object> row = Db.queryOne(
             "SELECT COUNT(*) AS n FROM bookings WHERE cycle_id = ? AND status IN ('ACCEPTED','ACTIVE')" +
-            " AND start_date <= ? AND end_date >= ?", cycleId, end, start);
+            " AND (start_date || ' ' || COALESCE(start_time, '00:00')) <= ?" +
+            " AND (end_date || ' ' || COALESCE(end_time, '23:59')) >= ?",
+            cycleId, end + " " + endTime, start + " " + startTime);
         return ((Number) row.get("n")).longValue() > 0;
     }
 
@@ -315,6 +343,9 @@ public final class BookingHandlers {
     static void addLateFee(Map<String, Object> out, Map<String, Object> b) {
         String status = (String) b.get("status");
         if (!"ACTIVE".equals(status) && !"COMPLETED".equals(status)) return;
+        // The fine stops when the RENTER marks the cycle returned, so the owner's
+        // confirmation delay never adds to it (user-confirmed rule). If only the
+        // owner has marked it back, the fine keeps showing as "so far".
         Object stamp = b.get("return_renter_at");
         boolean fixed = stamp != null;
         LocalDate returnDate = fixed ? LocalDate.parse(stamp.toString().substring(0, 10)) : LocalDate.now();
@@ -388,6 +419,8 @@ public final class BookingHandlers {
         out.put("ownerName", b.get("owner_name"));
         out.put("startDate", b.get("start_date"));
         out.put("endDate", b.get("end_date"));
+        out.put("startTime", b.get("start_time"));
+        out.put("endTime", b.get("end_time"));
         out.put("totalAmount", b.get("total_amount"));
         out.put("status", b.get("status"));
         out.put("pickupOwnerConfirmedAt", b.get("pickup_owner_at"));

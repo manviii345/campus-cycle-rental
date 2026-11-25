@@ -28,7 +28,21 @@ export default function Register() {
   }
 
   return (
-    <div className="page-narrow">
+    <div className="auth-wrap">
+      <div className="auth-hero">
+        <div>
+          <p className="eyebrow">Thapar campus rentals</p>
+          <h1>List your cycle. <em>Rent theirs.</em></h1>
+          <p>One account does both. Your cycle earns while you sit in class, and you get a ride when you need one.</p>
+          <ul className="hero-points">
+            <li>Free to join with your Thapar email ID</li>
+            <li>You set your price and availability</li>
+            <li>Both sides confirm pickup and return</li>
+          </ul>
+        </div>
+        <div className="hero-bike">🚲</div>
+      </div>
+      <div className="auth-form">
       <div className="card">
         <h2>Create your account</h2>
         {error && <div className="error">{error}</div>}
@@ -47,6 +61,7 @@ export default function Register() {
           </div>
         </form>
         <p className="muted">Already have an account? <Link to="/login">Log in</Link></p>
+      </div>
       </div>
     </div>
   )

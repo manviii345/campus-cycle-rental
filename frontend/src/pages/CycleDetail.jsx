@@ -10,6 +10,8 @@ export default function CycleDetail() {
   const [ownerProfile, setOwnerProfile] = useState(null)
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
+  const [startTime, setStartTime] = useState('09:00')
+  const [endTime, setEndTime] = useState('18:00')
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
 
@@ -32,7 +34,7 @@ export default function CycleDetail() {
     e.preventDefault()
     setError(''); setMessage('')
     try {
-      await request('POST', '/api/bookings', { cycleId: Number(id), startDate, endDate })
+      await request('POST', '/api/bookings', { cycleId: Number(id), startDate, endDate, startTime, endTime })
       setMessage('Booking request sent! The owner will accept or reject it. Track it under Bookings.')
     } catch (err) {
       setError(err.message)
@@ -95,10 +97,13 @@ export default function CycleDetail() {
             <div className="filters">
               <div><label>Start date</label><input type="date" value={startDate} min={cycle.availableFrom} max={cycle.availableTo} onChange={(e) => setStartDate(e.target.value)} required /></div>
               <div><label>End date</label><input type="date" value={endDate} min={startDate || cycle.availableFrom} max={cycle.availableTo} onChange={(e) => setEndDate(e.target.value)} required /></div>
+              <div><label>Pickup time</label><input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} required /></div>
+              <div><label>Return time</label><input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} required /></div>
             </div>
             {days > 0 && (
               <p>
                 {days} day{days > 1 ? 's' : ''} x {formatMoney(cycle.pricePerDay)} = <strong>{formatMoney(total)}</strong>
+                <span className="muted"> &nbsp;pickup {startTime}, return by {endTime}</span>
                 <span className="muted"> (payment is recorded after the owner accepts)</span>
               </p>
             )}

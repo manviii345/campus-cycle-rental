@@ -61,7 +61,7 @@ export default function Bookings() {
           <div className="card" key={b.id}>
             <h3>{b.cycleTitle} <span className={`badge ${b.status}`}>{b.status}</span></h3>
             <p className="muted">
-              {b.startDate} to {b.endDate} - <strong>{formatMoney(b.totalAmount)}</strong>
+              {b.startDate}{b.startTime ? ` ${b.startTime}` : ''} to {b.endDate}{b.endTime ? ` ${b.endTime}` : ''} - <strong>{formatMoney(b.totalAmount)}</strong>
               {' '}- {iAmOwner ? `renter: ${b.renterName}` : `owner: ${b.ownerName}`}
             </p>
 
@@ -76,7 +76,7 @@ export default function Bookings() {
               <p className="fee">
                 Late return: {b.lateDays} overdue day{b.lateDays === 1 ? '' : 's'} x {formatMoney(b.lateFeePerDay)} ={' '}
                 <strong>{formatMoney(b.fineAmount)}</strong>
-                {b.fineFinal ? ' fine (counted up to the day the renter initiated the return; settle it between you)' : ' so far (still growing until the renter initiates the return)'}
+                {b.fineFinal ? ' fine (counted up to the day the renter marked it returned; settle it between you)' : ' so far (still growing until the renter marks it returned)'}
               </p>
             )}
             {b.status === 'ACTIVE' && b.lateFeePerDay !== undefined && !b.lateDays && (
@@ -125,8 +125,9 @@ export default function Bookings() {
               {!iAmOwner && b.status === 'ACTIVE' && !b.returnRenterConfirmedAt && (
                 <button onClick={() => act(b.id, 'return')}>Initiate return</button>
               )}
-              {iAmOwner && b.status === 'ACTIVE' && !b.returnOwnerConfirmedAt && b.returnRenterConfirmedAt && (
-                <button onClick={() => act(b.id, 'return')}>Confirm return</button>
+              {iAmOwner && b.status === 'ACTIVE' && !b.returnOwnerConfirmedAt && (
+                <button onClick={() => act(b.id, 'return')} disabled={!b.returnRenterConfirmedAt}
+                  title={b.returnRenterConfirmedAt ? '' : 'The renter initiates the return first'}>Mark returned</button>
               )}
               {b.status === 'COMPLETED' && (
                 <button className="secondary" onClick={() => review(b.id)}>Leave a review</button>
