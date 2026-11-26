@@ -31,6 +31,9 @@ public final class Main {
 
     public static void main(String[] args) throws Exception {
         Db.init(); // connect and create tables if needed
+        if ("1".equals(Db.env("SEED_DEMO", ""))) {
+            seedDemoData(); // demo dataset, only when the database is empty
+        }
 
         int port = Integer.parseInt(Db.env("PORT", "8080"));
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
@@ -39,6 +42,51 @@ public final class Main {
         server.start();
         System.out.println("Cycle Rental server running at http://localhost:" + port);
         System.out.println("Database: " + (Db.SQLITE ? "SQLite" : "MySQL"));
+    }
+
+    /**
+     * Optional demo dataset for hosted demos (SEED_DEMO=1). Seeds only when the
+     * users table is empty, so restarts never wipe or duplicate real data.
+     * Demo logins: do_be24@thapar.edu / dr_be24@thapar.edu, password "password1".
+     */
+    private static void seedDemoData() {
+        long users = ((Number) Db.queryOne("SELECT COUNT(*) AS n FROM users").get("n")).longValue();
+        if (users > 0) {
+            return;
+        }
+        String hash = Auth.hashPassword("password1");
+        long owner = Db.execute(
+            "INSERT INTO users (name, email, phone, password_hash, created_at) VALUES (?, ?, ?, ?, " + Auth.now() + ")",
+            "Demo Owner", "do_be24@thapar.edu", "9812345678", hash);
+        Db.execute(
+            "INSERT INTO users (name, email, phone, password_hash, created_at) VALUES (?, ?, ?, ?, " + Auth.now() + ")",
+            "Demo Renter", "dr_be24@thapar.edu", "9812345679", hash);
+        long hero = addDemoCycle(owner, "Hero Sprint 26T", "Hero", "Sprint 26T", "City", "Good",
+            "Sturdy city bike, lock included.", 30.0, "Main Gate, TIET", "09:00", "18:00");
+        long atlas = addDemoCycle(owner, "Atlas Trail MTB", "Atlas", "Trail MTB", "Mountain", "Good",
+            "Mountain bike for rough paths and trails.", 40.0, "Hostel H", "08:00", "20:00");
+        System.out.println("SEED_DEMO: demo owner/renter created, cycles " + hero + " and " + atlas + " listed for the next 7 days");
+    }
+
+    /** One demo listing with confirmed hourly pricing and 7 rentable days. */
+    private static long addDemoCycle(long ownerId, String title, String brand, String model, String type,
+            String condition, String description, double pricePerHour, String location, String from, String by) {
+        java.time.LocalDate first = java.time.LocalDate.now();
+        java.time.LocalDate last = first.plusDays(6);
+        long id = Db.execute(
+            "INSERT INTO cycles (owner_id, title, brand, model, cycle_type, condition_note, description," +
+            " price_per_day, price_per_hour, pricing_confirmed, location, available_from, available_to, status, created_at)" +
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'AVAILABLE', " + Auth.now() + ")",
+            ownerId, title, brand, model, type, condition, description,
+            Math.round(pricePerHour * 24.0 * 100.0) / 100.0, pricePerHour, location,
+            first.toString(), last.toString());
+        for (int i = 0; i < 7; i++) {
+            Db.execute(
+                "INSERT INTO cycle_availability (cycle_id, day, pickup_from, return_by, confirmed, created_at)" +
+                " VALUES (?, ?, ?, ?, 1, " + Auth.now() + ")",
+                id, first.plusDays(i).toString(), from, by);
+        }
+        return id;
     }
 
     /** Routes one request to the right handler. */
